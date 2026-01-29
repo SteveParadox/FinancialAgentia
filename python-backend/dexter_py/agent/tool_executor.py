@@ -1,95 +1,68 @@
-from typing import Any, List, Optional, Dict, Callable, Awaitable
+# tool_executor.py
+import asyncio
+from typing import Dict, Any, Callable
+import structlog
 
+logger = structlog.get_logger()
 
 class ToolExecutor:
-    def __init__(self, *, tools: List[Any], context_manager: Any) -> None:
-        """
-        tools: a list of tool objects, each expected to have at least a 'name' attribute
-               and optionally an async 'run' method taking **kwargs.
-        context_manager: abstract dependency injected for stateful tool contexts.
-        """
-        self.context_manager = context_manager
-        self._tool_registry = self._index_tools(tools)
-
-    def _index_tools(self, tools: List[Any]) -> Dict[str, Any]:
-        """Indexes tools by their .name attribute."""
-        registry = {}
-
-        if not isinstance(tools, list):
-            return registry
-
-        for t in tools:
-            name = getattr(t, "name", None)
-            if isinstance(name, str) and name not in registry:
-                registry[name] = t
-
-        return registry
-
-    async def execute_tool(self, tool_name: str, args: Optional[dict]) -> dict:
-        """
-        Executes a tool by name, if found.
-
-        Behavior:
-        - Validates input types
-        - Returns predictable error structures
-        - Falls back to stub execution if the tool has no run() method
-        - Never raises exceptions outward (contained failures)
-        """
-
-        # Validate tool_name
-        if not isinstance(tool_name, str) or not tool_name.strip():
-            return {
-                "tool": None,
-                "error": "Invalid tool name",
-                "failed": True,
-            }
-
-        # Safety check args
-        if args is None:
-            args = {}
-        elif not isinstance(args, dict):
-            return {
-                "tool": tool_name,
-                "error": "Arguments must be a dictionary",
-                "failed": True,
-            }
-
-        tool = self._tool_registry.get(tool_name)
-
-        if tool is None:
-            return {
-                "tool": tool_name,
-                "error": "Tool not found",
-                "failed": True,
-            }
-
-        # Try real execution if tool has run() method
+    """Executes tools with circuit breaker and retry logic"""
+    
+    def __init__(self):
+        self.tools: Dict[str, Callable] = {}
+        self._circuit_breakers: Dict[str, Any] = {}  # pybreaker.CircuitBreaker
+        
+    def register(self, name: str, func: Callable, fail_max: int = 5):
+        """Register a tool with circuit breaker protection"""
+        self.tools[name] = func
+        # Circuit breaker prevents cascade failures
         try:
-            run_method = getattr(tool, "run", None)
-
-            if callable(run_method):
-                # If it's an async method, await it
-                if hasattr(run_method, "__await__"):
-                    result = await run_method(**args)
+            import pybreaker
+            self._circuit_breakers[name] = pybreaker.CircuitBreaker(
+                fail_max=fail_max,
+                reset_timeout=30
+            )
+        except ImportError:
+            self._circuit_breakers[name] = None
+    
+    async def execute(self, tool_name: str, parameters: Dict[str, Any]) -> Any:
+        """Execute tool with circuit breaker"""
+        if tool_name not in self.tools:
+            raise ValueError(f"Unknown tool: {tool_name}")
+        
+        cb = self._circuit_breakers.get(tool_name)
+        func = self.tools[tool_name]
+        
+        logger.info("tool_execution", tool=tool_name, params=list(parameters.keys()))
+        
+        try:
+            if cb:
+                # Use circuit breaker if available
+                if asyncio.iscoroutinefunction(func):
+                    return await cb(lambda: func(**parameters))
                 else:
-                    # Synchronous run method fallback
-                    result = run_method(**args)
+                    return await asyncio.to_thread(cb, lambda: func(**parameters))
+            else:
+                # Direct execution
+                if asyncio.iscoroutinefunction(func):
+                    return await func(**parameters)
+                else:
+                    return await asyncio.to_thread(func, **parameters)
+                    
+        except Exception as e:
+            logger.error("tool_failed", tool=tool_name, error=str(e))
+            raise
 
-                return {
-                    "tool": tool_name,
-                    "result": result,
-                }
+# Example tool implementations
+async def get_stock_price(ticker: str) -> Dict:
+    """Example tool - integrate with your data provider"""
+    # Integration with yfinance, alpaca, etc.
+    return {"ticker": ticker, "price": 150.0, "currency": "USD"}
 
-            # No run method: stub behavior
-            return {
-                "tool": tool_name,
-                "result": {"args": args, "stub": True},
-            }
-
-        except Exception as exc:
-            # Contain error, return structured failure
-            return {
-                "tool": tool_name,
-                "error": str(exc),
-                "failed": True,
-            }
+def calculate_metrics(data: Dict, metric_type: str) -> Dict:
+    """Example calculation tool"""
+    if metric_type == "pe_ratio":
+        price = data.get("price", 0)
+        earnings = data.get("eps", 1)
+        return {"pe_ratio": price / earnings if earnings else None}
+    return {}

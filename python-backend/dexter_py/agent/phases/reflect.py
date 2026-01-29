@@ -1,159 +1,143 @@
-import json
-from typing import Any, Dict, List, Optional, AsyncGenerator
-from ...model.llm import call_llm_stream
-from ..schemas import Plan, PlanTask
-import re
+# phases/reflect.py
+from typing import TYPE_CHECKING, List
+import structlog
+
+from ..schemas import ReflectionOutput  # Fixed: was ReflectionResult
+from ...model.llm import call_llm, LLMError
+
+if TYPE_CHECKING:
+    from orchestrator import ExecutionContext
+
+logger = structlog.get_logger()
 
 
 class ReflectPhase:
-    """
-    ReflectPhase (streaming): Uses the LLM to analyze completed plans and task results
-    and generate guidance for subsequent planning iterations.
-    """
-
-    def __init__(self, model: str, max_iterations: int = 5) -> None:
+    def __init__(self, model: str):
         self.model = model
-        self.max_iterations = max_iterations
-
-    async def run(
-        self,
-        *,
-        query: str,
-        understanding: Any,
-        completed_plans: List[Plan],
-        task_results: Dict[str, Any],
-        iteration: int,
-    ) -> Dict[str, Any]:
+    
+    async def run(self, context: "ExecutionContext") -> ReflectionOutput:
         """
-        Produce a reflection using streamed LLM reasoning.
-        Returns:
-            Dict with keys: is_complete, reasoning, missing_info, suggested_next_steps
+        Analyze execution quality and determine if we should continue, stop, or replan.
+        Uses structured output for consistent decision making.
         """
-        collected_output = ""
-        async for token in self.stream(
-            query=query,
-            understanding=understanding,
-            completed_plans=completed_plans,
-            task_results=task_results,
-            iteration=iteration
-        ):
-            collected_output += token
+        system_prompt = """You are a senior financial research auditor. Critically evaluate the work done.
 
-        # Attempt to parse JSON from streamed output
+Assessment Criteria:
+1. Data Completeness: Do we have all required financial metrics and context?
+2. Accuracy: Are calculations correct? Are data sources recent?
+3. Relevance: Does the information directly answer the user's query?
+4. Confidence: How certain are we about the conclusions?
+
+Output JSON matching ReflectionOutput schema:
+- is_complete: Only true if confidence > 0.8 AND all requirements met
+- confidence: 0.0-1.0 scale
+- reasoning: Detailed critique (2-3 sentences)
+- missing_info: Specific gaps that need filling
+- needs_replanning: True if the approach is fundamentally wrong
+- tasks_to_retry: IDs of specific failed tasks worth retrying
+- suggested_next_steps: Specific guidance for next iteration
+
+Be conservative. Only mark complete if truly satisfied."""
+        
+        execution_summary = self._build_summary(context)
+        
+        user_prompt = f"""Query: {context.query}
+Original Intent: {context.understanding.intent if context.understanding else 'N/A'}
+Iteration: {context.iteration + 1}
+
+Execution Summary:
+{execution_summary}
+
+Evaluate if we should:
+A) STOP - Answer is ready (is_complete=true)
+B) CONTINUE - Iterate with improvements (is_complete=false)
+C) REPLAN - Current approach is wrong (needs_replanning=true)"""
+        
         try:
-            json_text = self._extract_json(collected_output)
-            reflection_dict = json.loads(json_text)
-        except Exception:
-            # Fallback heuristic reflection
-            missing_tasks = self._identify_missing_tasks(completed_plans, task_results)
-            reflection_dict = {
-                "is_complete": not bool(missing_tasks),
-                "reasoning": "Fallback reflection due to LLM or parsing failure.",
-                "missing_info": missing_tasks,
-                "suggested_next_steps": "Focus on incomplete tasks: " + ", ".join(missing_tasks)
-            }
-
-        return {
-            "is_complete": reflection_dict.get("isComplete", False),
-            "reasoning": reflection_dict.get("reasoning", ""),
-            "missing_info": reflection_dict.get("missingInfo", []),
-            "suggested_next_steps": reflection_dict.get("suggestedNextSteps")
-        }
-
-    async def stream(
-        self,
-        *,
-        query: str,
-        understanding: Any,
-        completed_plans: List[Plan],
-        task_results: Dict[str, Any],
-        iteration: int,
-    ) -> AsyncGenerator[str, None]:
-        """
-        Streaming generator: yields tokens from the LLM as they arrive.
-        """
-        # Stop if max iterations reached
-        if iteration >= self.max_iterations:
-            yield json.dumps({
-                "isComplete": True,
-                "reasoning": f"Maximum iterations {self.max_iterations} reached.",
-                "missingInfo": [],
-                "suggestedNextSteps": ""
-            })
-            return
-
-        # Build textual summary
-        completed_summary_text = self._build_completed_summary(completed_plans, task_results)
-
-        system_prompt = (
-            "You are FinancialAgentia, an expert financial research agent. "
-            "Review the completed research tasks, identify any missing or incomplete work, "
-            "and provide reasoning and next-step guidance."
-        )
-
-        user_prompt = (
-            f"User Query: {query}\n"
-            f"Understanding: {getattr(understanding, 'intent', 'Unknown intent')}\n"
-            f"Completed Work:\n{completed_summary_text}\n"
-            f"Iteration: {iteration}\n\n"
-            "Tasks marked with ✗ are incomplete or failed. "
-            "Please provide:\n"
-            "1. Reasoning about completeness.\n"
-            "2. List of missing information.\n"
-            "3. Suggested next steps for the next planning iteration.\n"
-            "Return the result as a JSON object with keys: isComplete, reasoning, missingInfo, suggestedNextSteps."
-        )
-
-        try:
-            async for token in call_llm_stream(prompt=user_prompt, model=self.model, system_prompt=system_prompt):
-                yield token
-        except Exception:
-            # Fallback minimal JSON
-            missing_tasks = self._identify_missing_tasks(completed_plans, task_results)
-            yield json.dumps({
-                "isComplete": not bool(missing_tasks),
-                "reasoning": "Fallback reflection due to LLM error.",
-                "missingInfo": missing_tasks,
-                "suggestedNextSteps": "Focus on incomplete tasks: " + ", ".join(missing_tasks)
-            })
-
-    # ----------------------------
-    # Helpers
-    # ----------------------------
-    def build_planning_guidance(self, reflection: Dict[str, Any]) -> Optional[str]:
-        return reflection.get("suggested_next_steps")
-
-    def _extract_json(self, text: str) -> str:
-        """
-        Extract the first JSON object from streamed text.
-        """
-        pattern = re.compile(r"\{.*\}", re.DOTALL)
-        match = pattern.search(text)
-        if match:
-            return match.group(0)
-        # fallback minimal JSON
-        return json.dumps({
-            "isComplete": False,
-            "reasoning": "No JSON extracted",
-            "missingInfo": [],
-            "suggestedNextSteps": None
-        })
-
-    def _identify_missing_tasks(self, completed_plans: List[Plan], task_results: Dict[str, Any]) -> List[str]:
-        missing_tasks = []
-        for plan in completed_plans:
-            for task in plan.tasks:
-                result = task_results.get(task.id)
-                if not result or result.get("failed") or result.get("output") is None:
-                    missing_tasks.append(task.description)
-        return missing_tasks
-
-    def _build_completed_summary(self, completed_plans: List[Plan], task_results: Dict[str, Any]) -> str:
+            reflection = await call_llm(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                model=self.model,
+                output_model=ReflectionOutput,  # Fixed: was ReflectionResult
+                temperature=0.3,  # Lower temp for consistent evaluation
+                max_tokens=1500
+            )
+            
+            logger.info(
+                "reflection_complete",
+                run_id=context.run_id,
+                is_complete=reflection.is_complete,
+                confidence=reflection.confidence,
+                needs_replanning=reflection.needs_replanning,
+                missing_count=len(reflection.missing_info)
+            )
+            
+            return reflection
+            
+        except LLMError as e:
+            logger.error("reflection_llm_failed", run_id=context.run_id, error=str(e))
+            return self._fallback_reflection(context)
+        except Exception as e:
+            logger.error("reflection_unexpected_error", run_id=context.run_id, error=str(e))
+            return self._fallback_reflection(context)
+    
+    def _build_summary(self, context: "ExecutionContext") -> str:
+        """Build rich execution summary for the LLM."""
         lines = []
-        for plan in completed_plans:
-            lines.append(f"Plan: {plan.summary}")
-            for task in plan.tasks:
-                result = task_results.get(task.id)
-                status = "✓" if result and not result.get("failed") and result.get("output") else "✗"
-                lines.append(f"{status} {task.description}")
-        return "\n".join(lines) if lines else "No completed plans."
+        
+        # Current plan status
+        if context.current_plan:
+            lines.append(f"Current Plan: {context.current_plan.summary}")
+            lines.append(f"Tasks ({len(context.current_plan.tasks)} total):")
+            
+            for task in context.current_plan.tasks:
+                # Use string comparison for status
+                status_icon = {
+                    "completed": "✓",
+                    "failed": "✗",
+                    "running": "⟳",
+                    "pending": "○",
+                    "skipped": "⊘"
+                }.get(task.status, "?")
+                
+                lines.append(f"  {status_icon} {task.id}: {task.description}")
+                
+                if task.error:
+                    lines.append(f"    Error: {task.error[:100]}")
+                
+                # Include result preview if available
+                if task.id in context.task_results:
+                    result = context.task_results[task.id]
+                    if isinstance(result, dict) and "tool_results" in result:
+                        success_count = sum(
+                            1 for r in result["tool_results"] 
+                            if r.get("success")
+                        )
+                        total_count = len(result["tool_results"])
+                        lines.append(f"    Results: {success_count}/{total_count} tools succeeded")
+        
+        # Historical context from previous iterations
+        if context.completed_plans:
+            lines.append(f"\nPrevious Iterations: {len(context.completed_plans)}")
+            total_completed = sum(
+                len([t for t in p.tasks if t.status == "completed"])
+                for p in context.completed_plans
+            )
+            lines.append(f"Cumulative tasks completed: {total_completed}")
+        
+        return "\n".join(lines) if lines else "No execution data available."
+    
+    def _fallback_reflection(self, context: "ExecutionContext") -> ReflectionOutput:
+        """Conservative fallback when reflection fails."""
+        # Check if we have any completed tasks
+        has_results = bool(context.task_results)
+        
+        return ReflectionOutput(
+            is_complete=False,  # Never assume complete on error
+            confidence=0.3 if has_results else 0.0,
+            reasoning="Reflection system encountered an error. Proceeding cautiously with available data.",
+            missing_info=["Verification of current results"],
+            needs_replanning=False,
+            tasks_to_retry=[],  # Don't retry blindly on system failure
+            suggested_next_steps="Continue with current plan and proceed to answer generation if max iterations reached."
+        )

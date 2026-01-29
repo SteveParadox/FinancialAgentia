@@ -41,7 +41,7 @@ class LLMParseError(LLMError):
 # Configuration
 # ============================================================================
 
-DEFAULT_MODEL = os.getenv("LLM_MODEL", "claude-sonnet-4-20250514")
+DEFAULT_MODEL = os.getenv("LLM_MODEL", "phi3")
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful AI assistant specialized in financial analysis and research."
 )

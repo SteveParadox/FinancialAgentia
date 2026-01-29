@@ -1,172 +1,169 @@
-from typing import Optional, Any, List, AsyncGenerator
-from ...model.llm import call_llm_stream
-from .. import schemas
-from ..schemas import Plan, PlanTask
+# phases/plan.py
 import json
-import re
+from typing import TYPE_CHECKING, List, Dict, Any
+import structlog
+from datetime import datetime
+
+from ..schemas import Plan, PlanTask, TaskType, ToolCall
+from ...model.llm import call_llm, LLMError, LLMParseError
+
+if TYPE_CHECKING:
+    from orchestrator import ExecutionContext
+
+logger = structlog.get_logger()
 
 
 class PlanPhase:
-    """
-    Generates a structured Plan using the LLM with streaming support.
-
-    Features:
-    - Yields partial plan text as tokens
-    - Returns final Plan object
-    - Handles errors and fallbacks
-    - Generates unique task IDs per iteration
-    """
-
-    def __init__(self, model: str) -> None:
+    def __init__(self, model: str):
         self.model = model
-
-    async def run(
-        self,
-        *,
-        query: str,
-        understanding: Any,
-        prior_plans: Optional[List[Plan]] = None,
-        prior_results: Optional[dict] = None,
-        guidance_from_reflection: Optional[str] = None,
-        conversation_history: Optional[Any] = None,
-    ) -> Plan:
+    
+    async def run(self, context: "ExecutionContext") -> Plan:
         """
-        Generate a final Plan object by collecting streamed LLM tokens.
+        Generate execution plan with dependency resolution.
+        Uses structured output for reliable parsing.
         """
-        # Collect tokens into buffer
-        collected_output = ""
-        async for token in self.stream(
-            query=query,
-            understanding=understanding,
-            prior_plans=prior_plans,
-            prior_results=prior_results,
-            guidance_from_reflection=guidance_from_reflection,
-            conversation_history=conversation_history,
-        ):
-            collected_output += token
-
-        # Attempt to extract JSON
+        iteration = context.iteration + 1  # iterations are 0-indexed in context
+        system_prompt = self._build_system_prompt(iteration)
+        user_prompt = self._build_user_prompt(context, iteration)
+        
         try:
-            json_text = self._extract_json(collected_output)
-            plan_obj = Plan.parse_raw(json_text)
-        except Exception:
-            # Fallback minimal plan
-            plan_obj = Plan(
-                summary="Fallback plan due to LLM or parsing error",
-                tasks=[PlanTask(id="task-1", description=f"Answer query: {query}")]
+            # Generate structured plan using Pydantic model
+            plan = await call_llm(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                model=self.model,
+                output_model=Plan,
+                temperature=0.2,
+                max_tokens=2000
             )
-
-        # Generate unique task IDs
-        iteration = len(prior_plans) + 1 if prior_plans else 1
-        id_prefix = f"iter{iteration}_"
-        tasks: List[PlanTask] = []
-        for t in plan_obj.tasks:
-            tasks.append(
-                PlanTask(
-                    id=id_prefix + t.id,
-                    description=t.description,
-                    status=t.status,
-                    taskType=getattr(t, "taskType", None),
-                    toolCalls=getattr(t, "toolCalls", []),
-                    dependsOn=[id_prefix + d for d in getattr(t, "dependsOn", [])],
-                )
+            
+            # Prefix task IDs with iteration to ensure uniqueness across loops
+            self._normalize_task_ids(plan, iteration)
+            
+            # Validate no circular dependencies
+            self._validate_dependencies(plan)
+            
+            logger.info(
+                "plan_generated",
+                run_id=context.run_id,
+                iteration=iteration,
+                task_count=len(plan.tasks),
+                summary=plan.summary[:100]
             )
+            
+            return plan
+            
+        except (LLMError, LLMParseError) as e:
+            logger.error("plan_generation_failed", run_id=context.run_id, error=str(e))
+            return self._create_fallback_plan(context.query, iteration)
+        except Exception as e:
+            logger.error("plan_unexpected_error", run_id=context.run_id, error=str(e))
+            return self._create_fallback_plan(context.query, iteration)
+    
+    def _build_system_prompt(self, iteration: int) -> str:
+        base = f"""You are a financial research planner. Current date: {datetime.now().isoformat()}.
 
-        return Plan(summary=plan_obj.summary, tasks=tasks)
+Create a structured research plan. Rules:
+- Break complex queries into specific, verifiable tasks (max 10 tasks)
+- Each task needs: id (simple like "1", "2a"), description, task_type (research/calculation/validation/api_call)
+- tool_calls: Array of tool invocations needed (tool name + parameters)
+- depends_on: Array of task IDs that must complete before this one
+- max_retries: How many times to retry on failure (0-3)
 
-    async def stream(
-        self,
-        *,
-        query: str,
-        understanding: Any,
-        prior_plans: Optional[List[Plan]] = None,
-        prior_results: Optional[dict] = None,
-        guidance_from_reflection: Optional[str] = None,
-        conversation_history: Optional[Any] = None,
-    ) -> AsyncGenerator[str, None]:
-        """
-        Streaming version: yields tokens from the LLM as they arrive.
-        """
-        # ----------------------------
-        # Build conversation context
-        # ----------------------------
-        conversation_context: Optional[str] = None
-        if conversation_history:
-            try:
-                if hasattr(conversation_history, 'has_messages') and conversation_history.has_messages():
-                    if hasattr(conversation_history, 'select_relevant_messages'):
-                        relevant_messages = await conversation_history.select_relevant_messages(query)
-                        if relevant_messages:
-                            if hasattr(conversation_history, 'format_for_planning'):
-                                conversation_context = conversation_history.format_for_planning(relevant_messages)
-            except Exception:
-                pass
+Available Tools:
+- get_stock_price(ticker: str): Current price data
+- get_financials(ticker: str, period: str): Income statement, balance sheet
+- calculate_metrics(data: dict, metric: str): ROE, P/E, etc.
+- search_news(query: str, days: int): Recent news articles
+- compare_entities(entities: list): Comparative analysis
 
-        # ----------------------------
-        # Extract entities
-        # ----------------------------
-        entities = getattr(understanding, "entities", []) or []
-        entities_str = ", ".join([f"{e.type}: {e.value}" for e in entities]) if entities else "None identified"
-
-        # ----------------------------
-        # Format prior work
-        # ----------------------------
-        prior_work_summary = None
-        if prior_plans:
-            prior_work_summary = self._format_prior_work(prior_plans, prior_results)
-
-        # ----------------------------
-        # Build prompts
-        # ----------------------------
-        try:
-            from .. import prompts as _prompts
-            system_prompt = _prompts.get_plan_system_prompt()
-            user_prompt = _prompts.build_plan_user_prompt(
-                query=query,
-                intent=getattr(understanding, "intent", ""),
-                entities=entities_str,
-                prior_work_summary=prior_work_summary,
-                guidance_from_reflection=guidance_from_reflection,
-                conversation_context=conversation_context,
-            )
-        except Exception:
-            system_prompt = "You are a financial research assistant."
-            user_prompt = f"Create a plan for query: {query}"
-
-        # ----------------------------
-        # Stream LLM tokens
-        # ----------------------------
-        try:
-            async for token in call_llm_stream(prompt=user_prompt, model=self.model, system_prompt=system_prompt):
-                yield token
-        except Exception:
-            # Fallback: yield minimal JSON for plan
-            fallback_plan = {
-                "summary": "Fallback plan due to LLM error",
-                "tasks": [{"id": "task-1", "description": f"Answer query: {query}"}]
-            }
-            yield json.dumps(fallback_plan)
-
-    def _extract_json(self, text: str) -> str:
-        """
-        Extract the first JSON object from streamed LLM output.
-        """
-        json_pattern = re.compile(r"\{.*\}", re.DOTALL)
-        match = json_pattern.search(text)
-        if match:
-            return match.group(0)
-        # Fallback minimal JSON
-        return json.dumps({"summary": "Fallback plan", "tasks": [{"id": "task-1", "description": "Answer query"}]})
-
-    def _format_prior_work(self, plans: List[Plan], task_results: Optional[dict]) -> str:
-        """
-        Format summaries of prior plans and task results.
-        """
-        parts: List[str] = []
-        for i, plan in enumerate(plans):
-            parts.append(f"Pass {i+1}: {plan.summary}")
-            for task in plan.tasks:
-                result = task_results.get(task.id) if task_results else None
-                status = "✓" if result else "✗"
-                parts.append(f"  {status} {task.description}")
+Output must follow the Plan schema with summary and tasks array."""
+        
+        if iteration > 1:
+            base += "\n\nThis is a REPLANNING iteration. Focus on:\n"
+            base += "- Filling gaps from previous failed tasks\n"
+            base += "- Correcting errors identified in reflection\n"
+            base += "- Adding validation steps for uncertain data"
+        
+        return base
+    
+    def _build_user_prompt(self, context: "ExecutionContext", iteration: int) -> str:
+        parts = [
+            f"User Query: {context.query}",
+            f"Intent: {context.understanding.intent if context.understanding else 'N/A'}",
+            f"Entities Found: {[f'{e.type}={e.value}' for e in context.understanding.entities] if context.understanding else 'None'}"
+        ]
+        
+        if context.completed_plans:
+            parts.append("\nPrevious Plans (last 2):")
+            for i, plan in enumerate(context.completed_plans[-2:], 1):
+                parts.append(f"\nAttempt {i}: {plan.summary}")
+                for task in plan.tasks:
+                    # Use string status since TaskStatus enum doesn't exist
+                    status = "✓" if task.status == "completed" else "✗" if task.status == "failed" else "○"
+                    parts.append(f"  {status} {task.id}: {task.description}")
+        
+        # Use ReflectionOutput (not ReflectionResult)
+        if context.reflection and context.reflection.suggested_next_steps:
+            parts.append(f"\nReflection Guidance: {context.reflection.suggested_next_steps}")
+            if context.reflection.tasks_to_retry:
+                parts.append(f"Tasks to Retry: {', '.join(context.reflection.tasks_to_retry)}")
+        
         return "\n".join(parts)
+    
+    def _normalize_task_ids(self, plan: Plan, iteration: int):
+        """Ensure task IDs are unique across iterations and dependencies are updated."""
+        id_mapping = {}
+        
+        for task in plan.tasks:
+            old_id = task.id
+            new_id = f"iter{iteration}_{old_id}"
+            id_mapping[old_id] = new_id
+            task.id = new_id
+        
+        # Update dependencies to use new IDs
+        for task in plan.tasks:
+            if task.depends_on:
+                task.depends_on = [
+                    id_mapping.get(dep, f"iter{iteration}_{dep}") 
+                    for dep in task.depends_on
+                ]
+    
+    def _validate_dependencies(self, plan: Plan):
+        """Detect circular dependencies using DFS."""
+        graph = {task.id: set(task.depends_on) for task in plan.tasks}
+        visited = set()
+        rec_stack = set()
+        
+        def has_cycle(node: str) -> bool:
+            visited.add(node)
+            rec_stack.add(node)
+            
+            for neighbor in graph.get(node, []):
+                if neighbor not in visited:
+                    if has_cycle(neighbor):
+                        return True
+                elif neighbor in rec_stack:
+                    return True
+            
+            rec_stack.remove(node)
+            return False
+        
+        for node in graph:
+            if node not in visited:
+                if has_cycle(node):
+                    raise ValueError(f"Circular dependency detected in plan involving {node}")
+    
+    def _create_fallback_plan(self, query: str, iteration: int) -> Plan:
+        """Minimal fallback plan when LLM fails."""
+        return Plan(
+            summary=f"Direct research approach (iteration {iteration})",
+            tasks=[
+                PlanTask(
+                    id=f"iter{iteration}_fallback",
+                    description=f"Research and answer: {query[:100]}",
+                    task_type=TaskType.RESEARCH,
+                    tool_calls=[ToolCall(tool="search_news", parameters={"query": query, "days": 30})]
+                )
+            ]
+        )
