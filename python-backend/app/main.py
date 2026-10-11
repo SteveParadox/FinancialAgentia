@@ -346,6 +346,15 @@ def _session_storage_key(request: Request, session_id: str) -> str:
     return f"{namespace}:{session_id}"
 
 
+def _session_lock(request: Request, storage_key: str) -> asyncio.Lock:
+    locks = request.app.state.session_locks
+    lock = locks.get(storage_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        locks[storage_key] = lock
+    return lock
+
+
 @app.middleware("http")
 async def add_request_id_and_count(request: Request, call_next):
     # Add a request id and increment metrics
@@ -466,11 +475,7 @@ async def agent_query(request: Request, q: AgentQuery):
     session_store = request.app.state.session_store
     orchestrator = request.app.state.orchestrator
     storage_key = _session_storage_key(request, session_id)
-    locks = request.app.state.session_locks
-    lock = locks.get(storage_key)
-    if lock is None:
-        lock = asyncio.Lock()
-        locks[storage_key] = lock
+    lock = _session_lock(request, storage_key)
     
     async def event_stream() -> AsyncGenerator[bytes, None]:
         try:
@@ -537,9 +542,13 @@ async def get_history(request: Request, session_id: Optional[str] = None):
         raise HTTPException(status_code=400, detail="session_id required")
     
     session_store = request.app.state.session_store
-    history = session_store.get(_session_storage_key(request, session_id))
-    
-    if not history.has_messages():
+    storage_key = _session_storage_key(request, session_id)
+    async with _session_lock(request, storage_key):
+        history = session_store.get(storage_key)
+        snapshot = history.get_messages()
+        model = history._model
+
+    if not snapshot:
         return JSONResponse({
             "session_id": session_id,
             "turns": 0,
@@ -553,14 +562,14 @@ async def get_history(request: Request, session_id: Optional[str] = None):
             "answer": msg.answer[:500],  # Truncate for preview
             "summary": msg.summary,
         }
-        for msg in history.get_messages()
+        for msg in snapshot
     ]
     
     return JSONResponse({
         "session_id": session_id,
-        "turns": len(history),
+        "turns": len(snapshot),
         "messages": messages,
-        "model": history._model,
+        "model": model,
     })
 
 
@@ -582,7 +591,9 @@ async def clear_history(request: Request, session_id: Optional[str] = None):
         raise HTTPException(status_code=400, detail="session_id required")
     
     session_store = request.app.state.session_store
-    session_store.delete(_session_storage_key(request, session_id))
+    storage_key = _session_storage_key(request, session_id)
+    async with _session_lock(request, storage_key):
+        session_store.delete(storage_key)
     
     logger.info("Session history cleared", session_id=session_id)
     
