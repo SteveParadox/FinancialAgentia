@@ -39,7 +39,9 @@ class ToolExecutor:
             if cb:
                 # Use circuit breaker if available
                 if asyncio.iscoroutinefunction(func):
-                    return await cb.call_async(func, **parameters)
+                    # pybreaker 0.7 async integration targets Tornado, not asyncio.
+                    # Execute natively rather than falsely reporting breaker coverage.
+                    return await func(**parameters)
                 else:
                     return await asyncio.to_thread(cb, func, **parameters)
             else:
