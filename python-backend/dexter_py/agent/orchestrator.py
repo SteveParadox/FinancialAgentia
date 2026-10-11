@@ -1,377 +1,256 @@
-# orchestrator.py
-import asyncio
-from typing import Dict, List, Optional, Any
+"""Python API agent: one per-request context and one canonical task execution phase.
+
+The TypeScript financial tool catalog is not exposed here.  Python tool
+dependencies must be registered explicitly before use.
+"""
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
+from typing import Any, Dict, List, Optional, Mapping
+import asyncio
 import uuid
-from datetime import datetime
+
 import structlog
 
-from .schemas import Plan, Understanding, ReflectionOutput, PlanTask, TaskType
+from .schemas import Plan, Understanding, ReflectionOutput
+from .phases.execute import ExecutePhase
+from ..exceptions import OrchestratorError
 from ..model.llm_integration import StructuredLLMClient
-from ..exceptions import OrchestratorError,  MaxIterationsError
 
-logger = structlog.get_logger()
+logger = structlog.get_logger(__name__)
 
-class StopReason(Enum):
+
+class StopReason(str, Enum):
     COMPLETE = "reflection_complete"
     MAX_ITERATIONS = "max_iterations"
     NO_PROGRESS = "no_progress"
-    HIGH_CONFIDENCE = "high_confidence"
     ERROR = "error"
+
 
 @dataclass
 class ExecutionContext:
-    """Isolated context for a single run"""
     run_id: str
     query: str
     model: str
+    conversation_context: str = ""
     understanding: Optional[Understanding] = None
     current_plan: Optional[Plan] = None
     completed_plans: List[Plan] = field(default_factory=list)
     task_results: Dict[str, Any] = field(default_factory=dict)
+    reflection: Optional[ReflectionOutput] = None
     iteration: int = 0
     stop_reason: Optional[StopReason] = None
-    
-    def get_retryable_tasks(self) -> List[str]:
-        """Get IDs of tasks that failed but can be retried"""
-        if not self.current_plan:
-            return []
-        return [
-            t.id for t in self.current_plan.tasks 
-            if t.status == "failed" and t.max_retries > 0
-        ]
+
 
 class Orchestrator:
-    """
-    Financial AI Agent Orchestrator with proper LLM integration
-    """
-    
+    """Coordinates understanding, planning, real tools, reflection and answer."""
+
     PHASE_TIMEOUTS = {
-        'understand': 30,
-        'plan': 45,
-        'execute': 120,
-        'reflect': 30,
-        'answer': 60
+        "understand": 30.0, "plan": 45.0, "execute": 120.0,
+        "reflect": 30.0, "answer": 60.0,
     }
-    
+    MAX_ANSWER_CHARS = 100000
+
     def __init__(
         self,
         model: str,
         max_iterations: int = 3,
-        llm_client: Optional[StructuredLLMClient] = None
+        llm_client: Optional[StructuredLLMClient] = None,
+        tool_executor: Optional[Any] = None,
+        phase_timeouts: Optional[Mapping[str, float]] = None,
     ):
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("model must be a non-empty string")
+        if type(max_iterations) is not int or not 1 <= max_iterations <= 10:
+            raise ValueError("max_iterations must be an integer between 1 and 10")
         self.model = model
         self.max_iterations = max_iterations
-        self.llm = llm_client or StructuredLLMClient(model)
-        self.tool_executor = None  # Set via configure()
-        
-    def configure_tools(self, tool_executor):
-        """Inject tool executor dependency"""
-        self.tool_executor = tool_executor
-        
-    async def run(self, query: str) -> str:
-        """
-        Main execution flow
-        """
-        run_id = str(uuid.uuid4())
-        context = ExecutionContext(run_id=run_id, query=query, model=self.model)
-        
-        logger.info("orchestrator_start", run_id=run_id, query=query[:100])
-        
+        configured_timeouts = dict(self.PHASE_TIMEOUTS)
+        if phase_timeouts is not None:
+            for phase, value in phase_timeouts.items():
+                if phase not in configured_timeouts or isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= 300:
+                    raise ValueError(f"Invalid phase timeout for {phase!r}")
+                configured_timeouts[phase] = float(value)
+        self.phase_timeouts = configured_timeouts
+        self.llm = llm_client if llm_client is not None else StructuredLLMClient(model)
+        if not callable(getattr(self.llm, "complete_structured", None)):
+            raise ValueError("llm_client must implement complete_structured")
+        if not callable(getattr(self.llm, "stream_text", None)):
+            raise ValueError("llm_client must implement stream_text")
+        self.execute_phase = ExecutePhase(model=model)
+        if tool_executor is not None:
+            self.configure_tools(tool_executor)
+
+    def configure_tools(self, tool_executor: Any) -> None:
+        self.execute_phase.configure_tools(tool_executor)
+
+    async def run(self, query: str, message_history: Optional[Any] = None) -> str:
+        """Run without mutating shared history; API/service owns persistence."""
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("query must be non-empty")
+        if len(query) > 10000:
+            raise ValueError("query exceeds 10000 characters")
+        history_text = ""
+        if message_history is not None:
+            formatter = getattr(message_history, "format_for_planning", None)
+            if not callable(formatter):
+                raise TypeError("message_history must implement format_for_planning()")
+            history_text = formatter()[-8000:]
+        context = ExecutionContext(
+            run_id=str(uuid.uuid4()), query=query, model=self.model,
+            conversation_context=history_text,
+        )
+        logger.info("orchestrator_start", run_id=context.run_id)
         try:
-            # Phase 1: Understanding
-            context.understanding = await self._understand(context)
-            logger.info("understanding_complete", intent=context.understanding.intent)
-            
-            # Iterative refinement loop
-            while context.iteration < self.max_iterations:
-                context.iteration += 1
-                logger.info(f"iteration_{context.iteration}_start", run_id=run_id)
-                
-                # Phase 2: Planning
-                context.current_plan = await self._plan(context)
-                
-                # Phase 3: Execution
-                await self._execute(context)
-                
+            if self.execute_phase.tool_executor is None:
+                raise RuntimeError("Tool executor not configured")
+            context.understanding = await asyncio.wait_for(self._understand(context), timeout=self.phase_timeouts["understand"])
+            for iteration in range(1, self.max_iterations + 1):
+                context.iteration = iteration
+                context.current_plan = await asyncio.wait_for(self._plan(context), timeout=self.phase_timeouts["plan"])
+                # Reject malformed plans before any execution, not after partial success.
+                context.current_plan.get_execution_order()
+                await asyncio.wait_for(self._execute(context), timeout=self.phase_timeouts["execute"])
                 context.completed_plans.append(context.current_plan)
-                
-                # Phase 4: Reflection
-                reflection = await self._reflect(context)
-                
-                # Check stopping conditions
-                if reflection.is_complete and reflection.confidence > 0.8:
+                context.reflection = await asyncio.wait_for(self._reflect(context), timeout=self.phase_timeouts["reflect"])
+                incomplete_work = any(
+                    task.status != "completed" for task in context.current_plan.tasks
+                )
+                if (context.reflection.is_complete and
+                    context.reflection.confidence >= 0.8 and not incomplete_work):
                     context.stop_reason = StopReason.COMPLETE
                     break
-                    
-                if reflection.confidence > 0.95:
-                    context.stop_reason = StopReason.HIGH_CONFIDENCE
+                if not context.current_plan.tasks or all(
+                    task.status in ("failed", "skipped") for task in context.current_plan.tasks
+                ):
+                    context.stop_reason = StopReason.NO_PROGRESS
                     break
-                
-                # Check for progress
-                if context.iteration > 1 and not reflection.tasks_to_retry:
-                    completed_tasks = sum(
-                        1 for t in context.current_plan.tasks 
-                        if t.status == "completed"
-                    )
-                    if completed_tasks == 0:
-                        context.stop_reason = StopReason.NO_PROGRESS
-                        break
-            
             else:
                 context.stop_reason = StopReason.MAX_ITERATIONS
-            
-            # Phase 5: Answer
-            answer = await self._answer(context)
-            return answer
-            
-        except Exception as e:
-            logger.error("orchestrator_error", run_id=run_id, error=str(e))
+
+            if (context.completed_plans and
+                any(task.tool_calls for plan in context.completed_plans for task in plan.tasks) and
+                not any(task.status == "completed"
+                        for plan in context.completed_plans for task in plan.tasks)):
+                raise OrchestratorError("All requested financial research tool tasks failed or were skipped")
+
+            return await asyncio.wait_for(self._answer(context), timeout=self.phase_timeouts["answer"])
+        except Exception:
             context.stop_reason = StopReason.ERROR
-            return f"I encountered an error analyzing your request: {str(e)}"
-        
+            logger.exception("orchestrator_failed", run_id=context.run_id)
+            raise
         finally:
             logger.info(
-                "orchestrator_end", 
-                run_id=run_id, 
+                "orchestrator_end", run_id=context.run_id,
                 iterations=context.iteration,
-                stop_reason=context.stop_reason.value if context.stop_reason else None
+                stop_reason=context.stop_reason.value if context.stop_reason else None,
             )
-    
+
     async def _understand(self, context: ExecutionContext) -> Understanding:
-        """Understanding phase using structured output"""
-        system_prompt = """You are a financial query analyzer. Extract the user's intent and entities.
-        
-Rules:
-- Normalize company names to ticker symbols (Apple -> AAPL)
-- Identify time periods and specific metrics
-- Assess complexity (0.1=simple query, 0.9=complex multi-step analysis)"""
-        
-        user_prompt = f"Query: {context.query}"
-        
-        try:
-            return await self.llm.complete_structured(
-                prompt=user_prompt,
-                output_model=Understanding,
-                system_prompt=system_prompt,
-                temperature=0.1
-            )
-        except Exception as e:
-            logger.error("understand_failed", error=str(e))
-            # Graceful fallback
-            return Understanding(intent=context.query, entities=[])
-    
+        prompt = "Query: " + context.query
+        if context.conversation_context:
+            prompt += "\nPrevious conversation:\n" + context.conversation_context
+        return await self.llm.complete_structured(
+            prompt=prompt,
+            output_model=Understanding,
+            system_prompt=(
+                "You are a financial query analyzer. Extract intent, entities, "
+                "temporal constraints and complexity. Use only provided context."
+            ),
+            temperature=0.1,
+        )
+
     async def _plan(self, context: ExecutionContext) -> Plan:
-        """Planning phase with context from previous iterations"""
-        iteration = context.iteration
-        
-        system_prompt = f"""You are a financial research planner. Create a structured plan.
+        available = getattr(self.execute_phase.tool_executor, "tools", {})
+        tool_names = sorted(available) if isinstance(available, dict) else []
+        system_prompt = (
+            "You are a financial research planner. Produce a Plan with unique task IDs, "
+            "valid dependencies and executable tool calls. Do not invent tool names, "
+            "results or research. Available Python tools: " + repr(tool_names) + ". "
+            "When no tools are available, create an empty task list and explain "
+            "data limitations in the summary. Never fabricate financial data. "
+            "Current date: " + datetime.now(timezone.utc).date().isoformat()
+        )
+        prior = "\n".join(
+            f"{p.summary}: " + ", ".join(f"{t.id}={t.status}" for t in p.tasks)
+            for p in context.completed_plans[-2:]
+        )
+        prompt = (
+            f"Query: {context.query}\n"
+            f"Understanding: {context.understanding.model_dump_json()}\n"
+            f"Iteration: {context.iteration}\nPrevious plans: {prior}\n"
+            f"Reflection: {context.reflection.model_dump_json() if context.reflection else 'none'}\n"
+            f"Conversation context: {context.conversation_context}"
+        )
+        plan = await self.llm.complete_structured(
+            prompt=prompt, output_model=Plan, system_prompt=system_prompt,
+            temperature=0.2,
+        )
+        prefix = f"iter{context.iteration}_"
+        original_ids = [task.id for task in plan.tasks]
+        if len(original_ids) != len(set(original_ids)):
+            raise ValueError("Duplicate task IDs in generated plan")
+        mapping = {task_id: task_id if task_id.startswith(prefix) else prefix + task_id
+                   for task_id in original_ids}
+        for task in plan.tasks:
+            task.depends_on = [mapping.get(dep, dep) for dep in task.depends_on]
+            task.id = mapping[task.id]
+            # Runtime evidence belongs to the executor, never to the planner LLM.
+            task.status = "pending"
+            task.attempt_count = 0
+            task.result = None
+            task.error = None
+            task.start_time = None
+            task.end_time = None
+        plan.get_execution_order()
+        return plan
 
-Current date: {datetime.now().isoformat()}
-Iteration: {iteration}
+    async def _execute(self, context: ExecutionContext) -> None:
+        await self.execute_phase.run(context)
 
-Guidelines:
-- Break complex queries into specific, verifiable tasks
-- Use task IDs like "1", "2", "3" (will be prefixed automatically)
-- Specify dependencies in depends_on (refer to task IDs)
-- Include validation tasks
-- Prefer parallel execution when possible
-
-If this is iteration > 1, focus on:
-- Missing information from previous attempts
-- Tasks that failed and need retry
-- New angles suggested by reflection"""
-        
-        # Build context from previous attempts
-        prior_context = ""
-        if context.completed_plans:
-            prior_context = "\n\nPrevious attempts:\n"
-            for i, plan in enumerate(context.completed_plans[-2:], 1):
-                prior_context += f"Attempt {i}: {plan.summary}\n"
-                for task in plan.tasks:
-                    status = "✓" if task.status == "completed" else "✗"
-                    prior_context += f"  {status} {task.id}: {task.description}\n"
-        
-        user_prompt = f"""User Query: {context.query}
-Intent: {context.understanding.intent if context.understanding else 'N/A'}
-Entities: {[e.value for e in context.understanding.entities] if context.understanding else []}
-{prior_context}
-
-Create a focused research plan."""
-        
-        try:
-            plan = await self.llm.complete_structured(
-                prompt=user_prompt,
-                output_model=Plan,
-                system_prompt=system_prefix,
-                temperature=0.2
-            )
-            
-            # Normalize task IDs with iteration prefix
-            for task in plan.tasks:
-                task.id = f"iter{iteration}_{task.id}"
-                task.depends_on = [
-                    f"iter{iteration}_{d}" if not d.startswith(f"iter{iteration}_") else d
-                    for d in task.depends_on
-                ]
-            
-            return plan
-            
-        except Exception as e:
-            logger.error("plan_failed", error=str(e))
-            # Fallback plan
-            return Plan(
-                summary="Direct research plan",
-                tasks=[PlanTask(
-                    id=f"iter{iteration}_fallback",
-                    description=f"Research: {context.query}",
-                    task_type=TaskType.RESEARCH
-                )]
-            )
-    
-    async def _execute(self, context: ExecutionContext):
-        """Execute tasks with topological ordering and parallelism"""
-        if not context.current_plan or not self.tool_executor:
-            return
-        
-        plan = context.current_plan
-        batches = plan.get_execution_order()
-        
-        for batch_idx, batch in enumerate(batches):
-            logger.info(f"executing_batch_{batch_idx}", task_count=len(batch))
-            
-            # Execute batch in parallel with semaphore
-            semaphore = asyncio.Semaphore(5)  # Max 5 concurrent tasks
-            
-            async def run_task(task_id: str):
-                async with semaphore:
-                    task = next((t for t in plan.tasks if t.id == task_id), None)
-                    if not task:
-                        return
-                    
-                    # Check dependencies
-                    incomplete_deps = [
-                        dep for dep in task.depends_on 
-                        if dep not in context.task_results or context.task_results[dep].get("error")
-                    ]
-                    if incomplete_deps:
-                        task.status = "skipped"
-                        task.error = f"Missing dependencies: {incomplete_deps}"
-                        return
-                    
-                    task.start_time = datetime.now()
-                    task.status = "running"
-                    
-                    try:
-                        # Execute tool calls
-                        results = []
-                        for tool_call in task.tool_calls:
-                            result = await self._execute_tool_call(tool_call)
-                            results.append(result)
-                        
-                        task.status = "completed"
-                        task.result = {"tool_results": results}
-                        context.task_results[task.id] = task.result
-                        
-                    except Exception as e:
-                        task.status = "failed"
-                        task.error = str(e)
-                        task.max_retries -= 1
-                        context.task_results[task.id] = {"error": str(e)}
-                    
-                    task.end_time = datetime.now()
-            
-            await asyncio.gather(*[run_task(tid) for tid in batch])
-    
-    async def _execute_tool_call(self, tool_call) -> Any:
-        """Execute single tool with error handling"""
-        if not self.tool_executor:
-            return {"error": "Tool executor not configured"}
-        
-        try:
-            # Timeout handling
-            result = await asyncio.wait_for(
-                self.tool_executor.execute(
-                    tool_call.tool,
-                    tool_call.parameters
-                ),
-                timeout=tool_call.timeout
-            )
-            return result
-        except asyncio.TimeoutError:
-            return {"error": f"Tool {tool_call.tool} timed out after {tool_call.timeout}s"}
-        except Exception as e:
-            return {"error": f"Tool execution failed: {str(e)}"}
-    
     async def _reflect(self, context: ExecutionContext) -> ReflectionOutput:
-        """Reflection phase to assess progress"""
-        system_prompt = """You are a research auditor. Analyze the execution results and decide:
-1. Is the information sufficient to answer the query?
-2. What's missing or incorrect?
-3. Should we continue or stop?
+        evidence = "\n".join(
+            f"{task.id} | {task.status} | result={task.result!r} | error={task.error!r}"
+            for plan in context.completed_plans for task in plan.tasks
+        )
+        return await self.llm.complete_structured(
+            prompt=f"Query: {context.query}\nExecution evidence:\n{evidence or 'No tool evidence'}",
+            output_model=ReflectionOutput,
+            system_prompt=(
+                "Assess completeness based strictly on execution evidence. "
+                "Do not claim data was retrieved if tools were not executed. "
+                "Identify missing information and failed tasks."
+            ),
+            temperature=0.2,
+        )
 
-Be critical. Only mark complete if you have high confidence (>0.8) in the answer."""
-        
-        # Build execution summary
-        summary = f"Query: {context.query}\n\nExecution History:\n"
-        for plan in context.completed_plans:
-            summary += f"\nPlan: {plan.summary}\n"
-            for task in plan.tasks:
-                icon = "✓" if task.status == "completed" else "✗" if task.status == "failed" else "○"
-                summary += f"  {icon} {task.id}: {task.description}\n"
-                if task.error:
-                    summary += f"    Error: {task.error}\n"
-        
-        user_prompt = f"{summary}\n\nAssess completeness and suggest next steps."
-        
-        try:
-            return await self.llm.complete_structured(
-                prompt=user_prompt,
-                output_model=ReflectionOutput,
-                system_prompt=system_prompt,
-                temperature=0.3
-            )
-        except Exception as e:
-            logger.error("reflection_failed", error=str(e))
-            return ReflectionOutput(
-                is_complete=False,
-                confidence=0.0,
-                reasoning="Reflection failed, continuing cautiously",
-                needs_replanning=False
-            )
-    
     async def _answer(self, context: ExecutionContext) -> str:
-        """Generate final answer with streaming"""
-        # Assemble research context
-        research_context = []
-        for plan in context.completed_plans:
-            research_context.append(f"Plan: {plan.summary}")
-            for task in plan.tasks:
-                if task.status == "completed" and task.result:
-                    research_context.append(f"  {task.id}: {task.result}")
-        
-        system_prompt = """You are FinancialAgentia, an expert financial analyst.
-Synthesize the research results into a comprehensive answer.
-
-Guidelines:
-- Cite specific data points
-- Acknowledge uncertainties
-- Structure with Summary, Details, and Risks/Considerations"""
-        
-        user_prompt = f"""User Query: {context.query}
-
-Research Results:
-{chr(10).join(research_context)}
-
-Provide a comprehensive answer."""
-        
-        # Collect stream
-        chunks = []
-        async for token in self.llm.stream_text(
-            prompt=user_prompt,
-            system_prompt=system_prompt
+        evidence = "\n".join(
+            f"{task.id} ({task.status}): {task.result!r}; error={task.error!r}"
+            for plan in context.completed_plans for task in plan.tasks
+        )
+        prompt = (
+            f"User query: {context.query}\n"
+            f"Prior conversation: {context.conversation_context}\n"
+            f"Research execution: {evidence or 'No external financial research performed.'}\n"
+            f"Reflection: {context.reflection.model_dump_json() if context.reflection else 'none'}"
+        )
+        parts: List[str] = []
+        total_chars = 0
+        async for chunk in self.llm.stream_text(
+            prompt=prompt,
+            system_prompt=(
+                "You are FinancialAgentia. Answer using the evidence supplied. "
+                "Never invent prices, sources, citations or tool results. "
+                "State explicitly when financial data is unavailable."
+            ),
         ):
-            chunks.append(token)
-        
-        return "".join(chunks)
+            if chunk:
+                parts.append(chunk)
+                total_chars += len(chunk)
+                if total_chars > self.MAX_ANSWER_CHARS:
+                    raise OrchestratorError("Answer exceeds maximum permitted length")
+        answer = "".join(parts)
+        if not answer.strip():
+            raise OrchestratorError("The answer model returned an empty response")
+        return answer

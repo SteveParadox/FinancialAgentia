@@ -3,14 +3,14 @@ Robust test script for streaming LLM backend (/query).
 Supports Ollama local/cloud, OpenAI, Anthropic, or plain streaming responses.
 """
 
-import requests
+import httpx
 import json
 import sys
 
 # Backend URL (adjust if your backend runs elsewhere)
 BACKEND_URL = "http://localhost:8000/query"
 
-def test_backend(prompt="Hello, can you tell me about financial markets?"):
+def run_backend_smoke(prompt="Hello, can you tell me about financial markets?"):
     """
     Send a test query to the backend and print the streamed response robustly.
     """
@@ -19,7 +19,7 @@ def test_backend(prompt="Hello, can you tell me about financial markets?"):
 
     try:
         print(f"Sending request to {BACKEND_URL} with prompt: '{prompt}'")
-        response = requests.post(BACKEND_URL, json=payload, headers=headers, stream=True)
+        response = httpx.post(BACKEND_URL, json=payload, headers=headers, timeout=30)
 
         if response.status_code != 200:
             print(f"Error: HTTP {response.status_code}")
@@ -32,7 +32,7 @@ def test_backend(prompt="Hello, can you tell me about financial markets?"):
         for line in response.iter_lines():
             if not line:
                 continue
-            line = line.decode("utf-8").strip()
+            line = line.strip()
 
             # Handle SSE prefix
             if line.startswith("data: "):
@@ -54,7 +54,7 @@ def test_backend(prompt="Hello, can you tell me about financial markets?"):
         print("Test completed successfully!")
         return True
 
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         print(f"Request failed: {e}")
         return False
     except Exception as e:
@@ -68,5 +68,5 @@ if __name__ == "__main__":
     else:
         prompt = "Test the backend with a simple query."
 
-    success = test_backend(prompt)
+    success = run_backend_smoke(prompt)
     sys.exit(0 if success else 1)

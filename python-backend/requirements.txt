@@ -4,9 +4,9 @@ typer==0.9.0
 pydantic==2.12.5
 python-dotenv==1.0.0
 langchain==0.2.11
-langchain-openai==1.1.6
+langchain-openai==0.1.20
 langchain-ollama==0.1.1
-openai==2.14.0
+openai>=1.32.0,<2.0
 pytest==7.4.0
 # Added for production improvements
 slowapi==0.1.4
@@ -15,3 +15,10 @@ pybreaker==0.7.0
 structlog==23.1.0
 prometheus-client==0.16.0
 python-jose==3.3.0
+
+# Required by the current message-history module and the FastAPI test client
+numpy>=1.26,<2.0
+httpx==0.27.2
+
+# Optional Redis session-store runtime, installed for consistent production configuration
+redis>=5.0,<6.0

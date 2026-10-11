@@ -39,9 +39,11 @@ class ToolExecutor:
             if cb:
                 # Use circuit breaker if available
                 if asyncio.iscoroutinefunction(func):
-                    return await cb(lambda: func(**parameters))
+                    # pybreaker 0.7 async integration targets Tornado, not asyncio.
+                    # Execute natively rather than falsely reporting breaker coverage.
+                    return await func(**parameters)
                 else:
-                    return await asyncio.to_thread(cb, lambda: func(**parameters))
+                    return await asyncio.to_thread(cb.call, func, **parameters)
             else:
                 # Direct execution
                 if asyncio.iscoroutinefunction(func):
@@ -55,9 +57,8 @@ class ToolExecutor:
 
 # Example tool implementations
 async def get_stock_price(ticker: str) -> Dict:
-    """Example tool - integrate with your data provider"""
-    # Integration with yfinance, alpaca, etc.
-    return {"ticker": ticker, "price": 150.0, "currency": "USD"}
+    """Not a production data provider; do not register this demonstration tool."""
+    raise RuntimeError("Stock price provider is not integrated in the Python runtime")
 
 def calculate_metrics(data: Dict, metric_type: str) -> Dict:
     """Example calculation tool"""

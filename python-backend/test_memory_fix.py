@@ -15,7 +15,7 @@ from dexter_py.agent.phases.understand import UnderstandPhase
 from dexter_py.agent.phases.plan import PlanPhase
 
 
-async def test_memory_retention():
+async def demo_memory_retention():
     """Test that conversation memory is retained across turns"""
     
     print("=" * 70)
@@ -35,7 +35,7 @@ async def test_memory_retention():
     )
     
     # Add to history
-    history.add_agent_message(first_query, first_answer)
+    await history.add_message(first_query, first_answer)
     print(f"  -> Added to history. Total messages: {len(history._messages)}")
     
     # Simulate second turn
@@ -67,7 +67,7 @@ async def test_memory_retention():
         "EUR/USD is the most traded because it involves the two largest economies: "
         "the Eurozone and the United States. High trading volume creates liquidity."
     )
-    history.add_agent_message(second_query, second_answer)
+    await history.add_message(second_query, second_answer)
     print(f"\n  -> Added to history. Total messages: {len(history._messages)}")
     
     print("\n" + "=" * 70)
@@ -80,7 +80,7 @@ async def test_memory_retention():
     print(formatted)
 
 
-async def test_understand_phase_with_context():
+async def demo_understand_phase_with_context():
     """Test that understand phase properly accesses conversation context"""
     
     print("\n" + "=" * 70)
@@ -92,7 +92,7 @@ async def test_understand_phase_with_context():
     # Simulate first turn
     first_query = "What are the benefits of diversification?"
     first_answer = "Diversification reduces risk by spreading investments across assets."
-    history.add_agent_message(first_query, first_answer)
+    await history.add_message(first_query, first_answer)
     
     print(f"\n[HISTORY] Added message about diversification")
     print(f"  Messages in history: {len(history._messages)}")
@@ -124,8 +124,8 @@ async def test_understand_phase_with_context():
 
 
 async def main():
-    await test_memory_retention()
-    await test_understand_phase_with_context()
+    await demo_memory_retention()
+    await demo_understand_phase_with_context()
     
     print("\n" + "=" * 70)
     print("ALL TESTS PASSED - MEMORY FIX IS WORKING")

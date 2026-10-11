@@ -75,43 +75,44 @@ class Plan(BaseModel):
         }
     
     def get_execution_order(self) -> List[List[str]]:
-        """Topological sort returning parallelizable batches"""
-        from collections import deque, defaultdict
-        
-        # Build adjacency list and in-degree count
-        graph = defaultdict(list)
-        in_degree = {task.id: 0 for task in self.tasks}
-        
+        """Validated topological batches. Invalid plans must never partially execute."""
+        from collections import defaultdict, deque
+
+        ids = [task.id for task in self.tasks]
+        if not all(task_id.strip() for task_id in ids):
+            raise ValueError("Task IDs must be non-empty")
+        if len(ids) != len(set(ids)):
+            raise ValueError("Duplicate task IDs in plan")
+
+        known = set(ids)
+        indegree = {task_id: 0 for task_id in ids}
+        children = defaultdict(list)
         for task in self.tasks:
-            for dep in task.depends_on:
-                if dep in in_degree:
-                    graph[dep].append(task.id)
-                    in_degree[task.id] += 1
-        
-        # Find initial tasks (no dependencies)
-        queue = deque([tid for tid, deg in in_degree.items() if deg == 0])
-        batches = []
-        visited = set()
-        
+            for dependency in task.depends_on:
+                if dependency not in known:
+                    raise ValueError(f"Unknown dependency {dependency!r} for {task.id!r}")
+                if dependency == task.id:
+                    raise ValueError(f"Self-dependency in task {task.id!r}")
+                if task.depends_on.count(dependency) > 1:
+                    raise ValueError(f"Repeated dependency {dependency!r} for {task.id!r}")
+                indegree[task.id] += 1
+                children[dependency].append(task.id)
+
+        queue = deque(task_id for task_id in ids if indegree[task_id] == 0)
+        batches: List[List[str]] = []
+        visited = 0
         while queue:
-            current_batch = []
-            next_queue = deque()
-            
-            while queue:
-                node = queue.popleft()
-                if node not in visited:
-                    current_batch.append(node)
-                    visited.add(node)
-                    
-                    for neighbor in graph[node]:
-                        in_degree[neighbor] -= 1
-                        if in_degree[neighbor] == 0:
-                            next_queue.append(neighbor)
-            
-            if current_batch:
-                batches.append(current_batch)
-            queue = next_queue
-        
+            batch = list(queue)
+            queue.clear()
+            batches.append(batch)
+            visited += len(batch)
+            for task_id in batch:
+                for child in children[task_id]:
+                    indegree[child] -= 1
+                    if indegree[child] == 0:
+                        queue.append(child)
+        if visited != len(ids):
+            raise ValueError("Cyclic task dependencies in plan")
         return batches
 
 class ReflectionOutput(BaseModel):

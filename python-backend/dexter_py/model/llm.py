@@ -71,7 +71,7 @@ from ..utils._utils import (
     LLMParseError,
 )
 DEFAULT_PROVIDER = "openai"
-DEFAULT_MODEL = "ollama-qwen3-coder:480b-cloud" # Local Ollama by default
+DEFAULT_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")  # Explicit provider selection
 # DEFAULT_MODEL = "ollama-mistral:70b"  
 DEFAULT_SYSTEM_PROMPT = (
     "You are FinancialAgentia, an autonomous financial research agent.\n"
@@ -85,46 +85,53 @@ DEFAULT_SYSTEM_PROMPT = (
 import os
 
 def get_chat_model(model_name: str = DEFAULT_MODEL, streaming: bool = False):
-    """
-    Return a chat model instance. Supports Ollama (local/cloud), Anthropic, OpenAI,
-    and can be extended for other providers.
-    
-    Raises RuntimeError if required API keys are missing.
-    """
-    # --- Ensure OpenAI is available ---
-    if ChatOpenAI is None:
-        raise RuntimeError("langchain is required for the Python backend. Install from requirements.txt")
-
-    # --- Define provider factories ---
-    providers = {}
-
-    # Ollama
-    if 'ChatOllama' in globals() and ChatOllama is not None and model_name.startswith("ollama-"):
+    """Select a provider by the explicitly configured model, fail closed."""
+    if not isinstance(model_name, str) or not model_name:
+        raise ValueError("model_name must be non-empty")
+    if model_name.startswith("ollama-"):
+        if ChatOllama is None:
+            raise RuntimeError("langchain-ollama is required for Ollama models")
         is_cloud = model_name.endswith("-cloud")
-        base_url = os.getenv("OLLAMA_BASE_URL", "https://ollama.com" if is_cloud else "http://localhost:11434")
+        base_url = os.getenv(
+            "OLLAMA_BASE_URL", "https://ollama.com" if is_cloud else "http://localhost:11434"
+        )
         api_key = os.getenv("OLLAMA_API_KEY") if is_cloud else None
-        model_clean = model_name.replace("ollama-", "")
-        return ChatOllama(model=model_clean, base_url=base_url, api_key=api_key, streaming=streaming)
-
-    # Anthropic
-    if 'ChatAnthropic' in globals() and ChatAnthropic is not None and model_name.startswith("claude-"):
+        if is_cloud and not api_key:
+            raise RuntimeError("OLLAMA_API_KEY not set for Ollama cloud model")
+        model_clean = model_name.removeprefix("ollama-")
+        kwargs = {
+            "model": model_clean, "base_url": base_url, "streaming": streaming,
+        }
+        if is_cloud:
+            # Pass the cloud token to the underlying Ollama HTTP client, not as
+            # an unsupported ChatOllama constructor argument.
+            kwargs["client_kwargs"] = {
+                "headers": {"Authorization": f"Bearer {api_key}"}
+            }
+        return ChatOllama(**kwargs)
+    if model_name.startswith("claude-"):
+        if ChatAnthropic is None:
+            raise RuntimeError("langchain-anthropic required for Claude models")
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY not set in environment")
-        return ChatAnthropic(model=model_name, streaming=streaming, anthropic_api_key=api_key)
-
-    # Google (optional, only if installed)
-    if 'ChatGoogleGenerativeAI' in globals() and ChatGoogleGenerativeAI is not None and model_name.startswith("gemini-"):
+            raise RuntimeError("ANTHROPIC_API_KEY not set")
+        return ChatAnthropic(model=model_name, anthropic_api_key=api_key, streaming=streaming)
+    if model_name.startswith("gemini-"):
+        if ChatGoogleGenerativeAI is None:
+            raise RuntimeError("langchain-google-genai required for Gemini models")
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
-            raise RuntimeError("GOOGLE_API_KEY not set in environment")
-        return ChatGoogleGenerativeAI(model=model_name, streaming=streaming, api_key=api_key)
-
-    # Fallback to OpenAI
+            raise RuntimeError("GOOGLE_API_KEY not set")
+        return ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key, streaming=streaming)
+    if not model_name.startswith(("gpt-", "o1", "o3", "o4")):
+        raise ValueError(f"Unrecognized model/provider: {model_name}")
+    if ChatOpenAI is None:
+        raise RuntimeError("langchain-openai required for OpenAI models")
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set in environment")
-    return ChatOpenAI(model_name=model_name, openai_api_key=api_key, streaming=streaming)
+        raise RuntimeError("OPENAI_API_KEY not set")
+    return ChatOpenAI(model=model_name, api_key=api_key, streaming=streaming)
+
 
 async def call_llm(
     prompt: str,
@@ -177,7 +184,7 @@ async def call_llm(
     model = model or config.default_model
     system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
     max_tokens = max_tokens or config.default_max_tokens
-    temperature = temperature or config.default_temperature
+    temperature = config.default_temperature if temperature is None else temperature
     
     # Build system prompt with tools
     enhanced_system_prompt = _build_system_prompt_with_tools(system_prompt, tools)
@@ -215,7 +222,7 @@ async def call_llm(
     )
     async def _make_request() -> str:
         """Inner function with retry logic."""
-        client = await get_llm_client()
+        client = await get_llm_client(model)
 
         # Build a messages structure that we can pass to different clients.
         # Use HumanMessage/SystemMessage when available, otherwise fall back to
@@ -406,7 +413,7 @@ async def call_llm_stream(
     model = model or config.default_model
     system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
     max_tokens = max_tokens or config.default_max_tokens
-    temperature = temperature or config.default_temperature
+    temperature = config.default_temperature if temperature is None else temperature
     
     # Build system prompt with tools
     enhanced_system_prompt = _build_system_prompt_with_tools(system_prompt, tools)
@@ -418,7 +425,7 @@ async def call_llm_stream(
         has_tools=bool(tools)
     )
     
-    client = await get_llm_client()
+    client = await get_llm_client(model)
 
     # Try provider-specific streaming where available
     try:
@@ -430,51 +437,34 @@ async def call_llm_stream(
         else:
             messages_wrapper = [[{"role": "system", "content": enhanced_system_prompt}, {"role": "user", "content": prompt}]]
 
-        # If LangChain async callback handler is available, attempt true streaming
-        if AsyncCallbackHandler is not None and hasattr(client, 'agenerate'):
-            q: asyncio.Queue = asyncio.Queue()
-
-            class _QueueHandler(AsyncCallbackHandler):
-                async def on_llm_new_token(self, token: str, **kwargs):
-                    await q.put(token)
-
-                async def on_llm_end(self, *args, **kwargs):
-                    # signal end of stream
-                    await q.put(None)
-
-            handler = _QueueHandler()
-
-            async def _run_agenerate():
-                try:
-                    try:
-                        await client.agenerate(messages_wrapper, callbacks=[handler])
-                    except TypeError:
-                        # some versions expect messages= kwarg
-                        await client.agenerate(messages=messages_wrapper, callbacks=[handler])
-                except Exception as e:
-                    # on error, push sentinel to avoid hanging consumer
-                    try:
-                        await q.put(None)
-                    except Exception:
-                        pass
-                    raise
-
-            task = asyncio.create_task(_run_agenerate())
-
-            # yield tokens as they arrive
+        # Prefer LangChain's native streaming iterator. Callback queues can
+        # hang if the provider never signals an on_llm_end event.
+        if hasattr(client, "astream"):
+            messages = messages_wrapper[0]
+            stream = client.astream(messages, **kwargs)
             try:
                 while True:
-                    token = await q.get()
-                    if token is None:
+                    try:
+                        chunk = await asyncio.wait_for(
+                            stream.__anext__(), timeout=config.timeout
+                        )
+                    except StopAsyncIteration:
                         break
-                    if token:
-                        yield token
-                # ensure task finished
-                await task
-                return
-            except asyncio.CancelledError:
-                task.cancel()
-                raise
+                    content = getattr(chunk, "content", chunk)
+                    if isinstance(content, str) and content:
+                        yield content
+                    elif isinstance(content, list):
+                        text_chunks = [
+                            item.get("text", "") if isinstance(item, dict) else str(item)
+                            for item in content
+                        ]
+                        if any(text_chunks):
+                            yield "".join(text_chunks)
+            finally:
+                closer = getattr(stream, "aclose", None)
+                if callable(closer):
+                    await closer()
+            return
 
         # Primary: provider SDK with messages.stream (original approach)
         if hasattr(client, 'messages') and hasattr(client.messages, 'stream'):

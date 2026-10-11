@@ -1,0 +1,54 @@
+name: FinancialAgentia Phase 1 validation
+
+on:
+  pull_request:
+    paths:
+      - "python-backend/**"
+      - ".github/workflows/phase1-validation.yml"
+  workflow_dispatch:
+
+jobs:
+  python-backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: python-backend/requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile Python modules
+        run: python -m compileall -q app dexter_py
+      - name: Verify API import
+        run: python -c "import app.main; print('Backend import successful')"
+      - name: Run deterministic agent and API tests
+        run: python -m pytest -q
+      - name: Verify documented Uvicorn startup
+        run: |
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/financialagentia-uvicorn.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/financialagentia-uvicorn.log; kill "$pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/health; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+
+  typescript-compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install frozen dependencies
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Tests
+        run: bun test

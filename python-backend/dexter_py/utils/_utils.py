@@ -41,7 +41,7 @@ class LLMParseError(LLMError):
 # Configuration
 # ============================================================================
 
-DEFAULT_MODEL = os.getenv("LLM_MODEL", "phi3")
+DEFAULT_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful AI assistant specialized in financial analysis and research."
 )
@@ -70,8 +70,10 @@ _llm_config = LLMConfig()
 
 def configure_llm(config: LLMConfig) -> None:
     """Configure global LLM settings."""
-    global _llm_config
+    global _llm_config, _client_instance
     _llm_config = config
+    _client_instance = None
+    _client_instances.clear()
 
 
 def get_llm_config() -> LLMConfig:
@@ -83,9 +85,9 @@ def get_llm_config() -> LLMConfig:
 # Client Initialization
 # ============================================================================
 
-_client_instance = None
+_client_instance = None  # Legacy name retained for existing callers.
+_client_instances = {}
 _client_lock = asyncio.Lock()
-
 
 # LangChain provider imports - make optional so module can be imported even if
 # some provider packages are not installed. Each provider var is initialized
@@ -115,100 +117,39 @@ except Exception:
     AsyncCallbackHandler = None
 
 
-async def get_llm_client():
-    """
-    Get or create LLM client singleton for LangChain agents.
-    Tries Anthropic -> Ollama -> OpenAI.
-    Thread-safe lazy initialization.
-    Returns a LangChain ChatModel instance.
-    """
+async def get_llm_client(model_name: Optional[str] = None):
+    """Cache clients by selected model to prevent cross-provider/model reuse."""
     global _client_instance
-
-    if _client_instance is not None:
-        return _client_instance
-
+    model = model_name or get_llm_config().default_model
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("LLM model must be non-empty")
+    if model in _client_instances:
+        return _client_instances[model]
     async with _client_lock:
-        if _client_instance is not None:
-            return _client_instance
+        if model not in _client_instances:
+            from ..model.llm import get_chat_model
+            client = get_chat_model(model)
+            _client_instances[model] = client
+            structlog.get_logger(__name__).info("llm_client_initialized", model=model)
+        _client_instance = _client_instances[model]
+        return _client_instances[model]
 
-        config = get_llm_config()
-        logger = structlog.get_logger(__name__)
 
-        # ---------------------------------------------------------
-        # 1. Try Anthropic via LangChain
-        # ---------------------------------------------------------
-        try:
-            api_key = config.api_key or os.getenv("ANTHROPIC_API_KEY")
-
-            if api_key:
-                _client_instance = ChatAnthropic(
-                    model=config.default_model,
-                    api_key=api_key,
-                    base_url=config.base_url,
-                    timeout=config.timeout
-                )
-                logger.info("llm_client_initialized", provider="anthropic")
-                return _client_instance
-
-            logger.warning("anthropic_not_configured")
-
-        except Exception as e:
-            logger.warning("anthropic_unavailable", error=str(e))
-
-        # ---------------------------------------------------------
-        # 2. Try Ollama via LangChain
-        # ---------------------------------------------------------
-        try:
-            # Test availability by attempting to list models
-            import ollama
-            try:
-                await asyncio.to_thread(ollama.list)
-            except Exception:
-                raise RuntimeError("Ollama daemon not running")
-
-            _client_instance = ChatOllama(
-                model=config.default_model or "llama2",
-                temperature=config.default_temperature
-
-            )
-            logger.info("llm_client_initialized", provider="ollama")
-            return _client_instance
-
-        except Exception as e:
-            logger.warning("ollama_unavailable", error=str(e))
-
-        # ---------------------------------------------------------
-        # 3. Try OpenAI via LangChain
-        # ---------------------------------------------------------
-        try:
-            openai_key = os.getenv("OPENAI_API_KEY")
-
-            if openai_key:
-                _client_instance = ChatOpenAI(
-                    model=config.default_model or "gpt-4o-mini",
-                    api_key=openai_key,
-                    timeout=config.timeout,
-                    temperature=config.default_temperature
-
-                )
-                logger.info("llm_client_initialized", provider="openai")
-                return _client_instance
-
-            logger.warning("openai_not_configured")
-
-        except Exception as e:
-            logger.warning("openai_unavailable", error=str(e))
-
-        # ---------------------------------------------------------
-        # No provider worked
-        # ---------------------------------------------------------
-        raise RuntimeError(
-            "No supported LangChain LLM provider found.\n"
-            "Install and configure at least one of:\n"
-            " - anthropic (pip install langchain-anthropic)\n"
-            " - ollama (pip install langchain-ollama + run 'ollama serve')\n"
-            " - openai (pip install langchain-openai)"
-        )
+async def close_llm_clients() -> None:
+    """Release client resources at application shutdown where supported."""
+    global _client_instance
+    async with _client_lock:
+        clients = list(_client_instances.values())
+        _client_instances.clear()
+        _client_instance = None
+    for client in clients:
+        closer = getattr(client, "aclose", None)
+        if callable(closer):
+            await closer()
+        else:
+            closer = getattr(client, "close", None)
+            if callable(closer):
+                closer()
 
 
 # ============================================================================
