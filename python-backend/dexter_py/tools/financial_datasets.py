@@ -105,7 +105,7 @@ class FinancialDatasetsClient:
         source_url = ROOT + path + "?" + query
         for attempt in range(3):
             try:
-                response = await self.http.get(path, params=params)
+                response = await self.http.get(ROOT + path, params=params)
                 if response.status_code in {429, 500, 502, 503, 504} and attempt < 2:
                     await asyncio.sleep(0.2 * (2 ** attempt))
                     continue
@@ -119,10 +119,10 @@ class FinancialDatasetsClient:
                 data_time = None
                 if isinstance(payload, dict):
                     data_time = payload.get("time") or payload.get("date") or payload.get("report_period")
-                result = {"data": payload, "ticker": ticker,
+                result = {"ticker": ticker,
                           "provider": "financialdatasets.ai", "source_url": source_url,
                           "retrieved_at": datetime.now(timezone.utc).isoformat(),
-                          "data_timestamp": data_time}
+                          "data_timestamp": data_time, "data": payload}
                 if len(self.cache) >= 128:
                     self.cache.pop(next(iter(self.cache)))
                 ttl = 10 if operation == "get_price_snapshot" else 30 if operation == "get_news" else 120

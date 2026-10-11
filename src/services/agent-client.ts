@@ -28,7 +28,9 @@ export async function executeAgentQuery(
     body: JSON.stringify({ query, ...(sessionId ? { session_id: sessionId } : {}) }),
   });
   if (!response.ok) throw new Error('Financial agent backend HTTP ' + response.status);
-  const body = (await response.text()).replace(/\r\n/g, '\n');
+  const rawBody = await response.text();
+  if (rawBody.length > 200_000) throw new Error('Agent response exceeded size limit');
+  const body = rawBody.replace(/\r\n/g, '\n');
   for (const frame of body.split('\n\n')) {
     const data = frame.split('\n').filter(line => line.startsWith('data:'))
       .map(line => line.slice(5).trimStart()).join('\n');
