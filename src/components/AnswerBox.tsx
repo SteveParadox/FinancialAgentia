@@ -54,7 +54,8 @@ export const AnswerBox = React.memo(function AnswerBox({ stream, text, onStart, 
     })();
     return () => {
       cancelled = true;
-      void stream.return?.(undefined).catch(() => undefined);
+      const finishing = stream.return?.(undefined);
+      if (finishing) void finishing.catch(() => undefined);
     };
   }, [stream, text]);
 

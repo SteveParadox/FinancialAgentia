@@ -45,7 +45,7 @@ test('fragmented SSE with progress events returns only the verified terminal ans
     'data: {"type":"answer","content":"Source verified","session_id":"00000000-0000-4000-8000-000000000001"}\n',
     '\n',
   ];
-  globalThis.fetch = async () => new Response(new ReadableStream({
+  globalThis.fetch = async () => new Response(new ReadableStream<Uint8Array>({
     start(controller) {
       for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
       controller.close();

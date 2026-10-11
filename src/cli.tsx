@@ -127,6 +127,8 @@ export function CLI() {
 
   // Store the current turn's tasks when answer starts streaming
   const currentTasksRef = useRef<Task[]>([]);
+  // Ignore completions from requests cancelled before a new request begins.
+  const activeRunRef = useRef(0);
 
   const messageHistoryRef = useRef<MessageHistory>(new MessageHistory(model));
 
@@ -175,10 +177,12 @@ export function CLI() {
    */
   const executeQuery = useCallback(
     async (query: string) => {
+      const run = ++activeRunRef.current;
       setState('running');
       try {
         await processQuery(query);
       } catch (e) {
+        if (run !== activeRunRef.current) return;
         if ((e as Error).message?.includes('interrupted')) {
           setStatusMessage('Operation cancelled.');
         } else {
@@ -297,6 +301,7 @@ export function CLI() {
   useInput((input, key) => {
     if (key.ctrl && input === 'c') {
       if (state === 'running') {
+        activeRunRef.current += 1;
         setState('idle');
         cancelExecution();
         clearQueue();
