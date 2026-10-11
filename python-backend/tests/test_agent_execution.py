@@ -284,3 +284,35 @@ def test_planner_cannot_inject_completed_task_evidence():
         assert "999999" not in fake.calls[-1][1]
 
     asyncio.run(scenario())
+
+def test_phase_timeout_rejects_hanging_understanding():
+    class SlowLLM(FakeLLM):
+        async def complete_structured(self, **kwargs):
+            await asyncio.sleep(0.3)
+            return await super().complete_structured(**kwargs)
+
+    async def scenario():
+        agent = Orchestrator(
+            "gpt-4o-mini", llm_client=SlowLLM(), tool_executor=make_tools(),
+            phase_timeouts={"understand": 0.01},
+        )
+        with pytest.raises(asyncio.TimeoutError):
+            await agent.run("TEST")
+
+    asyncio.run(scenario())
+
+
+def test_unbounded_response_is_rejected():
+    class HugeAnswer(FakeLLM):
+        async def stream_text(self, **kwargs):
+            yield "x" * 100001
+
+    async def scenario():
+        agent = Orchestrator(
+            "gpt-4o-mini", max_iterations=1, llm_client=HugeAnswer(),
+            tool_executor=make_tools(),
+        )
+        with pytest.raises(OrchestratorError, match="maximum permitted length"):
+            await agent.run("TEST")
+
+    asyncio.run(scenario())
