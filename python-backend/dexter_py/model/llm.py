@@ -85,46 +85,43 @@ DEFAULT_SYSTEM_PROMPT = (
 import os
 
 def get_chat_model(model_name: str = DEFAULT_MODEL, streaming: bool = False):
-    """
-    Return a chat model instance. Supports Ollama (local/cloud), Anthropic, OpenAI,
-    and can be extended for other providers.
-    
-    Raises RuntimeError if required API keys are missing.
-    """
-    # --- Ensure OpenAI is available ---
-    if ChatOpenAI is None:
-        raise RuntimeError("langchain is required for the Python backend. Install from requirements.txt")
-
-    # --- Define provider factories ---
-    providers = {}
-
-    # Ollama
-    if 'ChatOllama' in globals() and ChatOllama is not None and model_name.startswith("ollama-"):
+    """Select a provider by the explicitly configured model, fail closed."""
+    if not isinstance(model_name, str) or not model_name:
+        raise ValueError("model_name must be non-empty")
+    if model_name.startswith("ollama-"):
+        if ChatOllama is None:
+            raise RuntimeError("langchain-ollama is required for Ollama models")
         is_cloud = model_name.endswith("-cloud")
-        base_url = os.getenv("OLLAMA_BASE_URL", "https://ollama.com" if is_cloud else "http://localhost:11434")
-        api_key = os.getenv("OLLAMA_API_KEY") if is_cloud else None
-        model_clean = model_name.replace("ollama-", "")
-        return ChatOllama(model=model_clean, base_url=base_url, api_key=api_key, streaming=streaming)
-
-    # Anthropic
-    if 'ChatAnthropic' in globals() and ChatAnthropic is not None and model_name.startswith("claude-"):
+        base_url = os.getenv(
+            "OLLAMA_BASE_URL", "https://ollama.com" if is_cloud else "http://localhost:11434"
+        )
+        if is_cloud and not os.getenv("OLLAMA_API_KEY"):
+            raise RuntimeError("OLLAMA_API_KEY not set for Ollama cloud model")
+        model_clean = model_name.removeprefix("ollama-")
+        return ChatOllama(model=model_clean, base_url=base_url, streaming=streaming)
+    if model_name.startswith("claude-"):
+        if ChatAnthropic is None:
+            raise RuntimeError("langchain-anthropic required for Claude models")
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY not set in environment")
-        return ChatAnthropic(model=model_name, streaming=streaming, anthropic_api_key=api_key)
-
-    # Google (optional, only if installed)
-    if 'ChatGoogleGenerativeAI' in globals() and ChatGoogleGenerativeAI is not None and model_name.startswith("gemini-"):
+            raise RuntimeError("ANTHROPIC_API_KEY not set")
+        return ChatAnthropic(model=model_name, anthropic_api_key=api_key, streaming=streaming)
+    if model_name.startswith("gemini-"):
+        if ChatGoogleGenerativeAI is None:
+            raise RuntimeError("langchain-google-genai required for Gemini models")
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
-            raise RuntimeError("GOOGLE_API_KEY not set in environment")
-        return ChatGoogleGenerativeAI(model=model_name, streaming=streaming, api_key=api_key)
-
-    # Fallback to OpenAI
+            raise RuntimeError("GOOGLE_API_KEY not set")
+        return ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key, streaming=streaming)
+    if not model_name.startswith(("gpt-", "o1", "o3", "o4")):
+        raise ValueError(f"Unrecognized model/provider: {model_name}")
+    if ChatOpenAI is None:
+        raise RuntimeError("langchain-openai required for OpenAI models")
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set in environment")
-    return ChatOpenAI(model_name=model_name, openai_api_key=api_key, streaming=streaming)
+        raise RuntimeError("OPENAI_API_KEY not set")
+    return ChatOpenAI(model=model_name, api_key=api_key, streaming=streaming)
+
 
 async def call_llm(
     prompt: str,
@@ -177,7 +174,7 @@ async def call_llm(
     model = model or config.default_model
     system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
     max_tokens = max_tokens or config.default_max_tokens
-    temperature = temperature or config.default_temperature
+    temperature = config.default_temperature if temperature is None else temperature
     
     # Build system prompt with tools
     enhanced_system_prompt = _build_system_prompt_with_tools(system_prompt, tools)
