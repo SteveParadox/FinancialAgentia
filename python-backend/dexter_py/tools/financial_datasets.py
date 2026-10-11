@@ -30,7 +30,13 @@ PATHS = {
 }
 
 class FinancialDataError(RuntimeError):
-    """Financial provider unavailable or returned unusable financial data."""
+    """Permanent invalid, unavailable or unusable financial source response."""
+    retryable = False
+
+
+class FinancialDataTransportError(FinancialDataError):
+    """Transient provider outage after bounded HTTP retries."""
+    retryable = True
 
 def validate_ticker(ticker: str) -> str:
     if not isinstance(ticker, str) or not SYMBOL.fullmatch(ticker):
@@ -201,10 +207,12 @@ class FinancialDatasetsClient:
                 self.cache[cache_key] = (time.monotonic() + ttl, result)
                 return result
             except httpx.HTTPStatusError as exc:
-                raise FinancialDataError("Financial provider HTTP " + str(exc.response.status_code)) from exc
+                error = (FinancialDataTransportError if exc.response.status_code in
+                         (429, 500, 502, 503, 504) else FinancialDataError)
+                raise error("Financial provider HTTP " + str(exc.response.status_code)) from exc
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 if attempt == 2:
-                    raise FinancialDataError("Financial provider unavailable") from exc
+                    raise FinancialDataTransportError("Financial provider unavailable") from exc
                 await asyncio.sleep(0.2 * (2 ** attempt))
         raise FinancialDataError("Financial provider failed")
 

@@ -181,3 +181,17 @@ def test_async_circuit_breaker_stops_repeated_provider_failures():
             await executor.execute("broken", {"ticker": "AAPL"})
     run(check())
     assert invoked["count"] == 2
+
+def test_invalid_inputs_cannot_open_shared_async_breaker():
+    executor = ToolExecutor()
+    count = {"calls": 0}
+    async def invalid(ticker: str):
+        count["calls"] += 1
+        raise ValueError("Invalid ticker")
+    executor.register("invalid", invalid, fail_max=2)
+    async def check():
+        for _ in range(4):
+            with pytest.raises(ValueError, match="Invalid ticker"):
+                await executor.execute("invalid", {"ticker": "BAD"})
+    run(check())
+    assert count["calls"] == 4

@@ -60,8 +60,15 @@ class ToolExecutor:
                 state["opened_until"] = time.monotonic() + 30
             raise
         except Exception as exc:
-            state["failures"] += 1
-            if state["failures"] >= state["fail_max"]:
+            # Invalid input, missing data and permanent HTTP errors must not
+            # poison a shared tool breaker for otherwise valid clients.
+            count_failure = not isinstance(exc, (ValueError, TypeError)) and getattr(exc, "retryable", True)
+            if count_failure:
+                state["failures"] += 1
+            if state["trial"] and not count_failure:
+                state["trial"] = False
+                state["opened_until"] = time.monotonic()
+            if count_failure and state["failures"] >= state["fail_max"]:
                 state["opened_until"] = time.monotonic() + 30
                 state["trial"] = False
             logger.error("tool_failed", tool=tool_name, error_type=type(exc).__name__)
