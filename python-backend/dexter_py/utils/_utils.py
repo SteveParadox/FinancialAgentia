@@ -135,6 +135,23 @@ async def get_llm_client(model_name: Optional[str] = None):
         return _client_instances[model]
 
 
+async def close_llm_clients() -> None:
+    """Release client resources at application shutdown where supported."""
+    global _client_instance
+    async with _client_lock:
+        clients = list(_client_instances.values())
+        _client_instances.clear()
+        _client_instance = None
+    for client in clients:
+        closer = getattr(client, "aclose", None)
+        if callable(closer):
+            await closer()
+        else:
+            closer = getattr(client, "close", None)
+            if callable(closer):
+                closer()
+
+
 # ============================================================================
 # Exceptions
 # ============================================================================
