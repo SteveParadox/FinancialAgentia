@@ -222,7 +222,7 @@ async def call_llm(
     )
     async def _make_request() -> str:
         """Inner function with retry logic."""
-        client = await get_llm_client()
+        client = await get_llm_client(model)
 
         # Build a messages structure that we can pass to different clients.
         # Use HumanMessage/SystemMessage when available, otherwise fall back to
@@ -413,7 +413,7 @@ async def call_llm_stream(
     model = model or config.default_model
     system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
     max_tokens = max_tokens or config.default_max_tokens
-    temperature = temperature or config.default_temperature
+    temperature = config.default_temperature if temperature is None else temperature
     
     # Build system prompt with tools
     enhanced_system_prompt = _build_system_prompt_with_tools(system_prompt, tools)
@@ -425,7 +425,7 @@ async def call_llm_stream(
         has_tools=bool(tools)
     )
     
-    client = await get_llm_client()
+    client = await get_llm_client(model)
 
     # Try provider-specific streaming where available
     try:
@@ -437,51 +437,34 @@ async def call_llm_stream(
         else:
             messages_wrapper = [[{"role": "system", "content": enhanced_system_prompt}, {"role": "user", "content": prompt}]]
 
-        # If LangChain async callback handler is available, attempt true streaming
-        if AsyncCallbackHandler is not None and hasattr(client, 'agenerate'):
-            q: asyncio.Queue = asyncio.Queue()
-
-            class _QueueHandler(AsyncCallbackHandler):
-                async def on_llm_new_token(self, token: str, **kwargs):
-                    await q.put(token)
-
-                async def on_llm_end(self, *args, **kwargs):
-                    # signal end of stream
-                    await q.put(None)
-
-            handler = _QueueHandler()
-
-            async def _run_agenerate():
-                try:
-                    try:
-                        await client.agenerate(messages_wrapper, callbacks=[handler])
-                    except TypeError:
-                        # some versions expect messages= kwarg
-                        await client.agenerate(messages=messages_wrapper, callbacks=[handler])
-                except Exception as e:
-                    # on error, push sentinel to avoid hanging consumer
-                    try:
-                        await q.put(None)
-                    except Exception:
-                        pass
-                    raise
-
-            task = asyncio.create_task(_run_agenerate())
-
-            # yield tokens as they arrive
+        # Prefer LangChain's native streaming iterator. Callback queues can
+        # hang if the provider never signals an on_llm_end event.
+        if hasattr(client, "astream"):
+            messages = messages_wrapper[0]
+            stream = client.astream(messages, **kwargs)
             try:
                 while True:
-                    token = await q.get()
-                    if token is None:
+                    try:
+                        chunk = await asyncio.wait_for(
+                            stream.__anext__(), timeout=config.timeout
+                        )
+                    except StopAsyncIteration:
                         break
-                    if token:
-                        yield token
-                # ensure task finished
-                await task
-                return
-            except asyncio.CancelledError:
-                task.cancel()
-                raise
+                    content = getattr(chunk, "content", chunk)
+                    if isinstance(content, str) and content:
+                        yield content
+                    elif isinstance(content, list):
+                        text_chunks = [
+                            item.get("text", "") if isinstance(item, dict) else str(item)
+                            for item in content
+                        ]
+                        if any(text_chunks):
+                            yield "".join(text_chunks)
+            finally:
+                closer = getattr(stream, "aclose", None)
+                if callable(closer):
+                    await closer()
+            return
 
         # Primary: provider SDK with messages.stream (original approach)
         if hasattr(client, 'messages') and hasattr(client.messages, 'stream'):
