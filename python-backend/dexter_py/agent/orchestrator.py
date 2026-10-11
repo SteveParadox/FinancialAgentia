@@ -6,7 +6,8 @@ dependencies must be registered explicitly before use.
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Mapping
+import asyncio
 import uuid
 
 import structlog
@@ -44,12 +45,19 @@ class ExecutionContext:
 class Orchestrator:
     """Coordinates understanding, planning, real tools, reflection and answer."""
 
+    PHASE_TIMEOUTS = {
+        "understand": 30.0, "plan": 45.0, "execute": 120.0,
+        "reflect": 30.0, "answer": 60.0,
+    }
+    MAX_ANSWER_CHARS = 100000
+
     def __init__(
         self,
         model: str,
         max_iterations: int = 3,
         llm_client: Optional[StructuredLLMClient] = None,
         tool_executor: Optional[Any] = None,
+        phase_timeouts: Optional[Mapping[str, float]] = None,
     ):
         if not isinstance(model, str) or not model.strip():
             raise ValueError("model must be a non-empty string")
@@ -57,6 +65,13 @@ class Orchestrator:
             raise ValueError("max_iterations must be an integer between 1 and 10")
         self.model = model
         self.max_iterations = max_iterations
+        configured_timeouts = dict(self.PHASE_TIMEOUTS)
+        if phase_timeouts is not None:
+            for phase, value in phase_timeouts.items():
+                if phase not in configured_timeouts or isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= 300:
+                    raise ValueError(f"Invalid phase timeout for {phase!r}")
+                configured_timeouts[phase] = float(value)
+        self.phase_timeouts = configured_timeouts
         self.llm = llm_client if llm_client is not None else StructuredLLMClient(model)
         if not callable(getattr(self.llm, "complete_structured", None)):
             raise ValueError("llm_client must implement complete_structured")
@@ -89,16 +104,20 @@ class Orchestrator:
         try:
             if self.execute_phase.tool_executor is None:
                 raise RuntimeError("Tool executor not configured")
-            context.understanding = await self._understand(context)
+            context.understanding = await asyncio.wait_for(self._understand(context), timeout=self.phase_timeouts["understand"])
             for iteration in range(1, self.max_iterations + 1):
                 context.iteration = iteration
-                context.current_plan = await self._plan(context)
+                context.current_plan = await asyncio.wait_for(self._plan(context), timeout=self.phase_timeouts["plan"])
                 # Reject malformed plans before any execution, not after partial success.
                 context.current_plan.get_execution_order()
-                await self._execute(context)
+                await asyncio.wait_for(self._execute(context), timeout=self.phase_timeouts["execute"])
                 context.completed_plans.append(context.current_plan)
-                context.reflection = await self._reflect(context)
-                if context.reflection.is_complete and context.reflection.confidence >= 0.8:
+                context.reflection = await asyncio.wait_for(self._reflect(context), timeout=self.phase_timeouts["reflect"])
+                incomplete_work = any(
+                    task.status != "completed" for task in context.current_plan.tasks
+                )
+                if (context.reflection.is_complete and
+                    context.reflection.confidence >= 0.8 and not incomplete_work):
                     context.stop_reason = StopReason.COMPLETE
                     break
                 if not context.current_plan.tasks or all(
@@ -115,7 +134,7 @@ class Orchestrator:
                         for plan in context.completed_plans for task in plan.tasks)):
                 raise OrchestratorError("All requested financial research tool tasks failed or were skipped")
 
-            return await self._answer(context)
+            return await asyncio.wait_for(self._answer(context), timeout=self.phase_timeouts["answer"])
         except Exception:
             context.stop_reason = StopReason.ERROR
             logger.exception("orchestrator_failed", run_id=context.run_id)
@@ -227,6 +246,8 @@ class Orchestrator:
         ):
             if chunk:
                 parts.append(chunk)
+                if sum(len(part) for part in parts) > self.MAX_ANSWER_CHARS:
+                    raise OrchestratorError("Answer exceeds maximum permitted length")
         answer = "".join(parts)
         if not answer.strip():
             raise OrchestratorError("The answer model returned an empty response")
