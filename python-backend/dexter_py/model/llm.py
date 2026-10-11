@@ -95,10 +95,20 @@ def get_chat_model(model_name: str = DEFAULT_MODEL, streaming: bool = False):
         base_url = os.getenv(
             "OLLAMA_BASE_URL", "https://ollama.com" if is_cloud else "http://localhost:11434"
         )
-        if is_cloud and not os.getenv("OLLAMA_API_KEY"):
+        api_key = os.getenv("OLLAMA_API_KEY") if is_cloud else None
+        if is_cloud and not api_key:
             raise RuntimeError("OLLAMA_API_KEY not set for Ollama cloud model")
         model_clean = model_name.removeprefix("ollama-")
-        return ChatOllama(model=model_clean, base_url=base_url, streaming=streaming)
+        kwargs = {
+            "model": model_clean, "base_url": base_url, "streaming": streaming,
+        }
+        if is_cloud:
+            # Pass the cloud token to the underlying Ollama HTTP client, not as
+            # an unsupported ChatOllama constructor argument.
+            kwargs["client_kwargs"] = {
+                "headers": {"Authorization": f"Bearer {api_key}"}
+            }
+        return ChatOllama(**kwargs)
     if model_name.startswith("claude-"):
         if ChatAnthropic is None:
             raise RuntimeError("langchain-anthropic required for Claude models")
