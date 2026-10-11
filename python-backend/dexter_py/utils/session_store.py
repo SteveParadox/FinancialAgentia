@@ -32,6 +32,17 @@ class InMemorySessionStore:
             raise ValueError("default_expiry must be positive")
         self.default_expiry = default_expiry
         self._expires_at: Dict[str, float] = {}
+        self._next_sweep_at = 0.0
+
+    def _prune_expired_locked(self) -> None:
+        now = time.monotonic()
+        if now < self._next_sweep_at:
+            return
+        for key, expiry in list(self._expires_at.items()):
+            if expiry <= now:
+                self._expires_at.pop(key, None)
+                self._store.pop(key, None)
+        self._next_sweep_at = now + 60.0
     
     def get(self, session_id: str, default: Optional[MessageHistory] = None) -> MessageHistory:
         """Retrieve a session's message history.
@@ -59,6 +70,7 @@ class InMemorySessionStore:
             history: MessageHistory object to store
         """
         with self._lock:
+            self._prune_expired_locked()
             self._store[session_id] = history
             self._expires_at[session_id] = time.monotonic() + self.default_expiry
     
