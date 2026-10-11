@@ -32,6 +32,16 @@ class ExecutePhase:
         batches = plan.get_execution_order()
         if self.tool_executor is None:
             raise RuntimeError("Tool executor not configured")
+        registered = getattr(self.tool_executor, "tools", None)
+        if isinstance(registered, dict):
+            unknown = sorted({
+                call.tool
+                for task in plan.tasks
+                for call in task.tool_calls
+                if call.tool not in registered
+            })
+            if unknown:
+                raise ValueError("Unknown tools in plan: " + ", ".join(unknown))
 
         by_id = {task.id: task for task in plan.tasks}
         semaphore = asyncio.Semaphore(self.max_concurrency)
@@ -57,18 +67,21 @@ class ExecutePhase:
                 task.status = "running"
                 try:
                     # max_retries is additional retries AFTER the initial attempt.
+                    successful_calls = {}
                     for attempt in range(task.max_retries + 1):
                         task.attempt_count = attempt + 1
                         try:
                             tool_results = []
-                            for call in task.tool_calls:
-                                result = await asyncio.wait_for(
-                                    self.tool_executor.execute(call.tool, call.parameters),
-                                    timeout=call.timeout,
-                                )
-                                tool_results.append({
-                                    "tool": call.tool, "result": result, "success": True
-                                })
+                            for index, call in enumerate(task.tool_calls):
+                                if index not in successful_calls:
+                                    result = await asyncio.wait_for(
+                                        self.tool_executor.execute(call.tool, call.parameters),
+                                        timeout=call.timeout,
+                                    )
+                                    successful_calls[index] = {
+                                        "tool": call.tool, "result": result, "success": True
+                                    }
+                                tool_results.append(successful_calls[index])
                             task.result = {"tool_results": tool_results}
                             task.status = "completed"
                             task.error = None
