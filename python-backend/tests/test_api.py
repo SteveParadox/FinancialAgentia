@@ -71,9 +71,13 @@ def test_health_metrics_dashboard_and_readiness(client):
     http, _ = client
     assert http.get("/health").json() == {"status": "ok"}
     assert http.get("/ready").status_code in (200, 503)
-    assert b"dexter_requests_total" in http.get("/metrics").content
-    assert http.get("/dashboard").status_code == 200
-    assert http.get("/api/recent").json().get("recent") is not None
+    auth = {"x-api-key": "test-key"}
+    assert b"dexter_requests_total" in http.get("/metrics", headers=auth).content
+    assert http.get("/dashboard", headers=auth).status_code == 200
+    assert http.get("/api/recent", headers=auth).json().get("recent") is not None
+    assert http.get("/api/recent").status_code == 401
+    assert http.get("/metrics").status_code == 401
+    assert http.get("/dashboard").status_code == 401
 
 
 def test_authentication_and_validation(client):
@@ -151,8 +155,53 @@ def test_agent_stream_error_does_not_commit_history(client):
             "query": "Test", "session_id": session
         })
         assert _events(res)[0]["type"] == "error"
-        assert "mock execution failed" in _events(res)[0]["error"]
+        assert _events(res)[0]["error"] == "Agent execution failed"
         history = http.get("/agent/history", headers=auth, params={"session_id": session})
         assert history.json()["turns"] == 0
     finally:
         main.app.state.orchestrator = original
+
+def test_jwt_subject_isolation(client, monkeypatch):
+    """One authenticated user cannot fetch or clear another user's history."""
+    from jose import jwt
+
+    http, _ = client
+    secret = "testing-secret-with-a-long-unique-value"
+    monkeypatch.setenv("JWT_SECRET", secret)
+
+    def header(who):
+        token = jwt.encode({"sub": who}, secret, algorithm="HS256")
+        return {"Authorization": f"Bearer {token}"}
+
+    first = http.post("/agent/query", headers=header("alice"),
+                      json={"query": "Private analysis"})
+    assert _events(first)[0]["type"] == "answer"
+    session_id = _events(first)[0]["session_id"]
+
+    own = http.get("/agent/history", headers=header("alice"),
+                   params={"session_id": session_id})
+    other = http.get("/agent/history", headers=header("bob"),
+                     params={"session_id": session_id})
+    assert own.json()["turns"] == 1
+    assert other.json()["turns"] == 0
+    cleared = http.delete("/agent/history", headers=header("bob"),
+                          params={"session_id": session_id})
+    assert cleared.status_code == 200
+    assert http.get("/agent/history", headers=header("alice"),
+                    params={"session_id": session_id}).json()["turns"] == 1
+
+
+def test_invalid_session_id_rejected(client):
+    http, _ = client
+    res = http.get("/agent/history", headers={"x-api-key": "test-key"},
+                   params={"session_id": "../../someone"})
+    assert res.status_code == 400
+
+
+def test_query_validation_bounds(client):
+    http, _ = client
+    auth = {"x-api-key": "test-key"}
+    assert http.post("/query", headers=auth,
+                     json={"prompt": ""}).status_code == 422
+    assert http.post("/agent/query", headers=auth,
+                     json={"query": "X" * 10001}).status_code == 422
