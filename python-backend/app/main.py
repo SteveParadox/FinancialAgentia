@@ -11,6 +11,7 @@ import json
 import uuid
 import time
 import hashlib
+import hmac
 from collections import deque
 
 # Load environment variables
@@ -34,7 +35,7 @@ from dexter_py.model.llm import call_llm_stream
 from dexter_py.utils.session_store import get_session_store
 from dexter_py.agent.orchestrator import Orchestrator
 from dexter_py.agent.tool_executor import ToolExecutor
-from dexter_py.utils._utils import LLMConfig, configure_llm
+from dexter_py.utils._utils import LLMConfig, configure_llm, close_llm_clients
 
 
 # Configure structlog for JSON output
@@ -52,6 +53,11 @@ logger = structlog.get_logger("dexter_backend")
 async def lifespan(application: FastAPI):
     """Construct dependencies once, fail visibly, clean up when stopped."""
     logger.info("backend_starting")
+    if os.getenv("BACKEND_ENV", "development").lower() == "production":
+        if not (os.getenv("JWT_SECRET") or os.getenv("BACKEND_API_KEY")):
+            raise RuntimeError("Production backend requires JWT_SECRET or BACKEND_API_KEY")
+        if os.getenv("SECURE_COOKIES", "false").lower() != "true":
+            raise RuntimeError("Production requires SECURE_COOKIES=true")
     application.state.recent_requests = deque(maxlen=1000)
     application.state.session_locks = WeakValueDictionary()
     application.state.session_store = get_session_store()
@@ -74,21 +80,25 @@ async def lifespan(application: FastAPI):
                 outcome = closer()
                 if asyncio.iscoroutine(outcome):
                     await outcome
+        await close_llm_clients()
         logger.info("backend_shutdown")
 
 
 app = FastAPI(title="Dexter Python Backend", lifespan=lifespan)
 
-# Allow local dev frontends to call the API
+# Browser origins are explicit because wildcard + credentialed CORS is unsafe.
+allowed_origins = [
+    value.strip() for value in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:3000,http://localhost:5173,"
+        "http://127.0.0.1:3000,http://127.0.0.1:5173",
+    ).split(",") if value.strip()
+]
+if "*" in allowed_origins:
+    raise ValueError("CORS_ORIGINS must list exact origins, not '*'")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        value.strip() for value in os.getenv(
-            "CORS_ORIGINS",
-            "http://localhost:3000,http://localhost:5173,"
-            "http://127.0.0.1:3000,http://127.0.0.1:5173",
-        ).split(",") if value.strip()
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -319,7 +329,7 @@ async def require_auth(request: Request) -> None:
         # No auth configured
         return
     provided = request.headers.get("x-api-key") or request.headers.get("X-API-Key")
-    if not provided or provided != expected:
+    if not provided or not hmac.compare_digest(provided, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
