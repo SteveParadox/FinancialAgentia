@@ -43,7 +43,7 @@ class ToolExecutor:
                     # Execute natively rather than falsely reporting breaker coverage.
                     return await func(**parameters)
                 else:
-                    return await asyncio.to_thread(cb, func, **parameters)
+                    return await asyncio.to_thread(cb.call, func, **parameters)
             else:
                 # Direct execution
                 if asyncio.iscoroutinefunction(func):
