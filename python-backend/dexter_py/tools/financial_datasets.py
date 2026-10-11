@@ -19,6 +19,7 @@ PATHS = {
     "get_price_snapshot": ("/prices/snapshot/", "snapshot"),
     "get_prices": ("/prices/", "prices"),
     "get_company_fundamentals": ("/financial-metrics/snapshot/", "snapshot"),
+    "get_company_profile": ("/company/facts/", "company_facts"),
     "get_financial_metrics": ("/financial-metrics/", "financial_metrics"),
     "get_income_statements": ("/financials/income-statements/", "income_statements"),
     "get_balance_sheets": ("/financials/balance-sheets/", "balance_sheets"),
@@ -136,6 +137,72 @@ class FinancialDatasetsClient:
                 await asyncio.sleep(0.2 * (2 ** attempt))
         raise FinancialDataError("Financial provider failed")
 
+
+    async def financial_ratios(self, ticker: str, period: str = "annual"):
+        """Derive ratios from matching actual financial-statement reporting periods."""
+        research = await self.retrieve("get_all_financial_statements", ticker,
+                                       period=period, limit=1)
+        statements = research["data"]
+        if not isinstance(statements, dict):
+            raise FinancialDataError("Financial statements must be structured")
+        income_rows = statements.get("income_statements")
+        balance_rows = statements.get("balance_sheets")
+        if not isinstance(income_rows, list) or not income_rows or not isinstance(balance_rows, list) or not balance_rows:
+            raise FinancialDataError("Income and balance statements are required")
+        income, balance = income_rows[0], balance_rows[0]
+        if not isinstance(income, dict) or not isinstance(balance, dict):
+            raise FinancialDataError("Malformed financial statement entries")
+        period_end = income.get("report_period")
+        if not period_end or period_end != balance.get("report_period") or income.get("currency") != balance.get("currency"):
+            raise FinancialDataError("Financial statement currency or period mismatch")
+
+        def metric(item: dict, key: str) -> Decimal | None:
+            value = item.get(key)
+            if value is None:
+                return None
+            try:
+                decimal = Decimal(str(value))
+            except (InvalidOperation, TypeError, ValueError):
+                raise FinancialDataError("Invalid financial metric " + key)
+            if not decimal.is_finite():
+                raise FinancialDataError("Nonfinite financial metric " + key)
+            return decimal
+
+        net_income = metric(income, "net_income")
+        revenue = metric(income, "revenue")
+        equity = metric(balance, "shareholders_equity")
+        if equity is None:
+            equity = metric(balance, "total_equity")
+        output = {}
+        if net_income is not None and revenue is not None and revenue > 0:
+            output["net_profit_margin"] = str(net_income / revenue)
+        if net_income is not None and equity is not None and equity > 0:
+            output["return_on_period_end_equity"] = str(net_income / equity)
+        if not output:
+            raise FinancialDataError("No valid inputs for financial ratio calculations")
+        return {
+            "ticker": research["ticker"], "provider": research["provider"],
+            "source_url": research["source_url"], "retrieved_at": research["retrieved_at"],
+            "report_period": period_end, "currency": income.get("currency"),
+            "calculation": "Net income / revenue; net income / period-end equity, where available",
+            "data": output,
+        }
+
+    async def compare(self, tickers: list[str]):
+        if not isinstance(tickers, list) or not 2 <= len(tickers) <= 5:
+            raise ValueError("Compare between 2 and 5 symbols")
+        normalized = [validate_ticker(t) for t in tickers]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("Comparison tickers must be distinct")
+        results = await asyncio.gather(*(
+            self.retrieve("get_company_fundamentals", ticker)
+            for ticker in normalized
+        ))
+        return {
+            "comparison": results,
+            "note": "Provider-reported metric snapshots. Align currencies and reporting dates before ranking.",
+        }
+
     async def indicators(self, ticker: str, start_date: str, end_date: str, window: int = 14):
         validate_limit(window)
         research = await self.retrieve("get_prices", ticker, start_date=start_date,
@@ -177,6 +244,12 @@ def register_financial_tools(executor: Any, api_key: str | None = None):
                                        interval_multiplier=interval_multiplier)
     async def get_company_fundamentals(ticker: str):
         return await provider.retrieve("get_company_fundamentals", ticker)
+    async def get_company_profile(ticker: str):
+        return await provider.retrieve("get_company_profile", ticker)
+    async def calculate_financial_ratios(ticker: str, period: str = "annual"):
+        return await provider.financial_ratios(ticker, period)
+    async def compare_companies(tickers: list[str]):
+        return await provider.compare(tickers)
     async def get_financial_metrics(ticker: str, period: str = "ttm", limit: int = 4):
         return await provider.retrieve("get_financial_metrics", ticker, period=period, limit=limit)
     async def get_income_statements(ticker: str, period: str = "annual", limit: int = 4):
@@ -199,6 +272,7 @@ def register_financial_tools(executor: Any, api_key: str | None = None):
 
     executor.tool_signatures = {}
     for func in (get_price_snapshot, get_prices, get_company_fundamentals,
+                 get_company_profile, calculate_financial_ratios, compare_companies,
                  get_financial_metrics, get_income_statements, get_balance_sheets,
                  get_cash_flow_statements, get_all_financial_statements,
                  get_news, get_filings, calculate_technical_indicators):
