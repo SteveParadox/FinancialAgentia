@@ -124,11 +124,12 @@ async def ready():
         bool(os.getenv("OPENAI_API_KEY")) if model.startswith(("gpt-", "o1", "o3", "o4")) else
         False
     )
-    ready = initialized and provider_configured
     tools_registered = (len(state.orchestrator.execute_phase.tool_executor.tools)
                         if initialized and hasattr(state.orchestrator.execute_phase.tool_executor, "tools") else 0)
+    # A configured LLM alone is not proof of financial research readiness.
+    ready = bool(initialized and provider_configured and tools_registered)
     return JSONResponse(
-        {"ready": bool(ready), "agent_initialized": bool(initialized),
+        {"ready": ready, "agent_initialized": bool(initialized),
          "model_provider_configured": bool(provider_configured),
          "financial_tools_registered": bool(tools_registered)},
         status_code=200 if ready else 503,
