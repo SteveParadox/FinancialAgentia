@@ -42,14 +42,21 @@ def client(monkeypatch):
     monkeypatch.delenv("JWT_SECRET", raising=False)
     monkeypatch.delenv("REDIS_URL", raising=False)
     fake = FakeLLM()
-    with TestClient(main.app) as client:
-        tools = ToolExecutor()
-        tools.register("fixture_quote", lambda ticker: {"ticker": ticker, "price": 125.0})
-        main.app.state.orchestrator = Orchestrator(
-            model="gpt-4o-mini", max_iterations=1,
-            llm_client=fake, tool_executor=tools,
-        )
-        yield client, fake
+    # Prevent cross-test IP throttling; middleware remains installed in production.
+    originally_enabled = main.limiter.enabled
+    main.limiter.enabled = False
+    try:
+        context = TestClient(main.app)
+        with context as client:
+            tools = ToolExecutor()
+            tools.register("fixture_quote", lambda ticker: {"ticker": ticker, "price": 125.0})
+            main.app.state.orchestrator = Orchestrator(
+                model="gpt-4o-mini", max_iterations=1,
+                llm_client=fake, tool_executor=tools,
+            )
+            yield client, fake
+    finally:
+        main.limiter.enabled = originally_enabled
 
 
 def _events(response):
