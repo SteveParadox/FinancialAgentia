@@ -56,6 +56,7 @@ class PlanTask(BaseModel):
     
     # Runtime fields (not part of LLM schema)
     status: str = "pending"
+    attempt_count: int = 0
     result: Optional[Any] = None
     error: Optional[str] = None
     start_time: Optional[datetime] = None

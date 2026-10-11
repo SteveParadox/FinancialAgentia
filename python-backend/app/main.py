@@ -35,6 +35,7 @@ from dexter_py.model.llm import call_llm_stream
 from dexter_py.utils.session_store import get_session_store
 from dexter_py.agent.orchestrator import Orchestrator
 from dexter_py.agent.tool_executor import ToolExecutor
+from dexter_py.tools.financial_datasets import register_financial_tools
 from dexter_py.utils._utils import LLMConfig, configure_llm, close_llm_clients
 
 
@@ -67,6 +68,8 @@ async def lifespan(application: FastAPI):
     # Real tools are registered explicitly; the Python scaffold has no
     # production financial feed. Never register demonstration prices here.
     tools = ToolExecutor()
+    financial_provider = register_financial_tools(tools)
+    application.state.financial_provider = financial_provider
     application.state.orchestrator = Orchestrator(
         model=model, max_iterations=iterations, tool_executor=tools,
     )
@@ -74,7 +77,9 @@ async def lifespan(application: FastAPI):
     try:
         yield
     finally:
-        for dependency in (application.state.session_store, tools):
+        for dependency in (application.state.session_store, tools, financial_provider):
+            if dependency is None:
+                continue
             closer = getattr(dependency, "close", None)
             if callable(closer):
                 outcome = closer()
@@ -158,6 +163,15 @@ async def ready():
          "financial_tools_registered": bool(tools_registered)},
         status_code=200 if ready else 503,
     )
+
+
+@app.get("/api/v1/tools")
+async def registered_tools(request: Request):
+    await require_auth(request)
+    executor = request.app.state.orchestrator.execute_phase.tool_executor
+    signatures = getattr(executor, "tool_signatures", {})
+    return {"tools": [{"name": name, "signature": signature}
+                      for name, signature in sorted(signatures.items())]}
 
 
 @app.get("/metrics")
@@ -462,6 +476,7 @@ class AgentQuery(BaseModel):
     session_id: Optional[str] = None  # Auto-generated if not provided
 
 
+@app.post("/api/v1/agents/execute")
 @app.post("/agent/query")
 @limiter.limit("10/minute")
 async def agent_query(request: Request, q: AgentQuery):

@@ -163,10 +163,12 @@ class Orchestrator:
     async def _plan(self, context: ExecutionContext) -> Plan:
         available = getattr(self.execute_phase.tool_executor, "tools", {})
         tool_names = sorted(available) if isinstance(available, dict) else []
+        signatures = getattr(self.execute_phase.tool_executor, "tool_signatures", {})
+        catalog = "\n".join(f"{name}{signature}" for name, signature in sorted(signatures.items()))
         system_prompt = (
             "You are a financial research planner. Produce a Plan with unique task IDs, "
             "valid dependencies and executable tool calls. Do not invent tool names, "
-            "results or research. Available Python tools: " + repr(tool_names) + ". "
+            "results or research. Available Python tools and exact argument signatures:\n" + (catalog or repr(tool_names)) + ". "
             "When no tools are available, create an empty task list and explain "
             "data limitations in the summary. Never fabricate financial data. "
             "Current date: " + datetime.now(timezone.utc).date().isoformat()
