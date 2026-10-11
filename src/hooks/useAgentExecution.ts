@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
+import { executeAgentQuery } from '../services/agent-client.js';
 import { MessageHistory } from '../utils/message-history.js';
 import { generateId } from '../cli/types.js';
 import type { Task, Phase, TaskStatus, ToolCallStatus, Plan } from '../agent/state.js';
@@ -84,6 +85,8 @@ export function useAgentExecution({
 
   const currentQueryRef = useRef<string | null>(null);
   const isProcessingRef = useRef(false);
+  const controllerRef = useRef<AbortController | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
   
   // Track pending updates for race condition handling
   const pendingTaskUpdatesRef = useRef<PendingTaskUpdate[]>([]);
@@ -330,225 +333,54 @@ export function useAgentExecution({
   /**
    * Processes a single query through the agent.
    */
-  const processQuery = useCallback(
-    async (query: string): Promise<void> => {
-      if (isProcessingRef.current) return;
-      isProcessingRef.current = true;
-      setIsProcessing(true);
-
-      // Store current query for message history
-      currentQueryRef.current = query;
-
-      // Clear any pending updates and errors from previous run
-      pendingTaskUpdatesRef.current = [];
-      pendingToolCallUpdatesRef.current = [];
-      setToolErrors([]);
-
-      // Initialize simple turn state for frontend display
-      setCurrentTurn({
-        id: generateId(),
-        query,
-        state: {
-          currentPhase: 'understand',
-          understandComplete: true,
-          planComplete: true,
-          reflectComplete: true,
-          tasks: [],
-          isAnswering: true,
-        },
-      });
-
-      try {
-        // Send the prompt to the Python backend at /query
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        // If a backend API key or bearer token is provided in the environment, include it.
-        // Bundlers typically expose env vars via process.env.
-        // For production, inject secrets via a secure mechanism rather than bundling.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const env: any = (typeof process !== 'undefined' ? (process as any).env : undefined) || {};
-        if (env && env.BACKEND_API_KEY) {
-          headers['X-API-Key'] = env.BACKEND_API_KEY;
-        }
-        if (env && env.AUTH_BEARER) {
-          headers['Authorization'] = `Bearer ${env.AUTH_BEARER}`;
-        }
-
-        const res = await fetch('http://localhost:8000/query', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ prompt: query }),
-        });
-        if (!res.ok) {
-          const text = await res.text();
-          console.error('Frontend: Backend error response', text);
-          throw new Error(`Backend error: ${res.status} ${text}`);
-        }
-
-        // Try to stream the response if possible, else read full text
-        let answerText: string;
-        try {
-          const decoder = new TextDecoder();
-
-          // Push-based queue so we can (a) provide an async generator to the UI
-          // and (b) also accumulate the full answer for message history.
-          const queue: SSETokenEvent[] = [];
-          let resolveNext: (() => void) | null = null;
-          let finished = false;
-          let finalParts: string[] = [];
-          let finishResolve: (() => void) | null = null;
-          const finishedPromise = new Promise<void>((r) => { finishResolve = r; });
-
-          const pushToken = (item: SSETokenEvent | string) => {
-            const ev: SSETokenEvent = typeof item === 'string' ? { token: item } : item;
-            queue.push(ev);
-            finalParts.push(ev.token);
-            if (resolveNext) {
-              resolveNext();
-              resolveNext = null;
-            }
-          };
-
-          const endQueue = () => {
-            finished = true;
-            if (resolveNext) {
-              resolveNext();
-              resolveNext = null;
-            }
-            if (finishResolve) finishResolve();
-          };
-
-          // Background reader loop: parse SSE events and push tokens.
-          (async () => {
-            try {
-              let buffer = '';
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const body: any = (res as any).body;
-              if (body && typeof body.getReader === 'function') {
-                // Browser-style ReadableStream
-                const webReader = body.getReader();
-                while (true) {
-                  // eslint-disable-next-line no-await-in-loop
-                  const { value, done: d } = await webReader.read();
-                  if (value) {
-                    buffer += decoder.decode(value, { stream: true });
-                    const parts = buffer.split('\n\n');
-                    buffer = parts.pop() || '';
-                    for (const part of parts) {
-                      const lines = part.split('\n').map((l) => l.trim());
-                      const dataLines = lines.filter((l) => l.startsWith('data:'));
-                      if (dataLines.length === 0) continue;
-                      const dataStr = dataLines.map((l) => l.replace(/^data:\s?/, '')).join('\n');
-                      try {
-                        const obj = JSON.parse(dataStr);
-                        if (obj && typeof obj === 'object') {
-                          if (obj.token) {
-                            pushToken({ token: String(obj.token), role: obj.role, request_id: obj.request_id });
-                          } else if (typeof obj === 'string') {
-                            pushToken({ token: obj });
-                          } else if (obj.error) {
-                            pushToken({ token: `[ERROR] ${String(obj.error)}` });
-                          }
-                        }
-                      } catch (_err) {
-                        if (dataStr) pushToken({ token: dataStr });
-                      }
-                    }
-                  }
-                  if (d) break;
-                }
-              } else if (body && typeof body[Symbol.asyncIterator] === 'function') {
-                // Node-style async iterator over Buffer/Uint8Array chunks
-                // eslint-disable-next-line no-restricted-syntax
-                for await (const chunk of body) {
-                  buffer += decoder.decode(chunk, { stream: true } as any);
-                  const parts = buffer.split('\n\n');
-                  buffer = parts.pop() || '';
-                  for (const part of parts) {
-                    const lines = part.split('\n').map((l) => l.trim());
-                    const dataLines = lines.filter((l) => l.startsWith('data:'));
-                    if (dataLines.length === 0) continue;
-                    const dataStr = dataLines.map((l) => l.replace(/^data:\s?/, '')).join('\n');
-                    try {
-                      const obj = JSON.parse(dataStr);
-                      if (obj && typeof obj === 'object') {
-                        if (obj.token) {
-                          pushToken({ token: String(obj.token), role: obj.role, request_id: obj.request_id });
-                        } else if (typeof obj === 'string') {
-                          pushToken({ token: obj });
-                        } else if (obj.error) {
-                          pushToken({ token: `[ERROR] ${String(obj.error)}` });
-                        }
-                      }
-                    } catch (_err) {
-                      if (dataStr) pushToken({ token: dataStr });
-                    }
-                  }
-                }
-              } else {
-                // No readable body available
-                pushToken({ token: '[NO_BODY]' });
-              }
-            } catch (err) {
-              try { pushToken({ token: `[STREAM_ERROR] ${String(err)}` }); } catch (_) {}
-            } finally {
-              endQueue();
-            }
-          })();
-
-          // Async generator exposes tokens to the UI
-
-          async function* streamGenerator() {
-            while (!finished || queue.length > 0) {
-              if (queue.length === 0) {
-                // wait for next push
-                await new Promise<void>((res) => { resolveNext = res; });
-                continue;
-              }
-              const token = queue.shift()!;
-              yield token;
-            }
-          }
-
-          const gen = streamGenerator();
-          setAnswerStream(gen);
-
-          // Wait for the reader to finish, then assemble final answer
-          await finishedPromise;
-          answerText = finalParts.join('');
-        } catch (e) {
-          // Fallback: read as JSON then extract response
-          const data = await res.json();
-          answerText = typeof data.response === 'string' ? data.response : JSON.stringify(data.response);
-          // Provide a simple non-streaming response to the UI (SSETokenEvent)
-          setAnswerStream((async function* () { yield { token: answerText }; })());
-        }
-
-        // Finalize
-        // Add to message history for multi-turn context
-        if (currentQueryRef.current && answerText) {
-          try {
-            await messageHistory.addMessage(currentQueryRef.current, answerText);
-          } catch (_err) {
-            // ignore
-          }
-        }
-
-      } catch (err) {
-        setCurrentTurn(null);
-        currentQueryRef.current = null;
-        throw err;
-      } finally {
-        isProcessingRef.current = false;
-        setIsProcessing(false);
-      }
-    },
-    [model, messageHistory, createAgentCallbacks]
-  );
+  const processQuery = useCallback(async (query: string): Promise<void> => {
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
+    setIsProcessing(true);
+    setAnswerStream(null);
+    currentQueryRef.current = query;
+    pendingTaskUpdatesRef.current = [];
+    pendingToolCallUpdatesRef.current = [];
+    setToolErrors([]);
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    setCurrentTurn({
+      id: generateId(),
+      query,
+      state: {
+        currentPhase: 'understand',
+        understandComplete: true,
+        planComplete: true,
+        reflectComplete: true,
+        tasks: [],
+        isAnswering: true,
+      },
+    });
+    try {
+      const answer = await executeAgentQuery(query, sessionIdRef.current, controller.signal);
+      if (controller.signal.aborted) throw new Error('Agent execution interrupted');
+      sessionIdRef.current = answer.session_id;
+      setAnswerStream((async function* () {
+        yield { token: answer.content, request_id: answer.request_id };
+      })());
+    } catch (error) {
+      setCurrentTurn(null);
+      currentQueryRef.current = null;
+      if (controller.signal.aborted) throw new Error('Agent execution interrupted');
+      throw error;
+    } finally {
+      if (controllerRef.current === controller) controllerRef.current = null;
+      isProcessingRef.current = false;
+      setIsProcessing(false);
+    }
+  }, []);
 
   /**
    * Cancels the current execution.
    */
   const cancelExecution = useCallback(() => {
+    controllerRef.current?.abort();
+    controllerRef.current = null;
     setCurrentTurn(null);
     setAnswerStream(null);
     isProcessingRef.current = false;
