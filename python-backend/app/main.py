@@ -505,6 +505,8 @@ async def agent_query(request: Request, q: AgentQuery):
         try:
             async with lock:
                 history = session_store.get(storage_key)
+                if not history._model:
+                    history.set_model(orchestrator.model)
                 final_answer = await orchestrator.run(
                     query=q.query,
                     message_history=history,
