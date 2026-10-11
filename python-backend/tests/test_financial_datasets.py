@@ -125,3 +125,42 @@ def test_malformed_financial_data_is_not_marked_success():
             with pytest.raises(FinancialDataError, match="combined"):
                 await provider.retrieve("get_all_financial_statements", "AAPL", period="annual", limit=1)
     run(check())
+
+def test_invalid_historical_closes_fail_closed():
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda req: httpx.Response(200, json={"prices": [{"ticker": "AAPL", "close": -1}]})
+        )) as http:
+            provider = FinancialDatasetsClient("test-secret", http_client=http)
+            with pytest.raises(FinancialDataError, match="Historical price"):
+                await provider.retrieve("get_prices", "AAPL", start_date="2026-09-01", end_date="2026-09-10")
+    run(check())
+
+def test_partial_statement_results_are_explicit():
+    data = {"financials": {"income_statements": [
+        {"ticker": "AAPL", "report_period": "2025-12-31", "revenue": 100}
+    ], "balance_sheets": [], "cash_flow_statements": []}}
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda req: httpx.Response(200, json=data)
+        )) as http:
+            provider = FinancialDatasetsClient("test-secret", http_client=http)
+            result = await provider.retrieve("get_all_financial_statements",
+                                             "AAPL", period="annual", limit=1)
+            assert result["completeness"] == "partial"
+            assert result["data_timestamp"] == "2025-12-31"
+            assert set(result["missing_statements"]) == {
+                "balance_sheets", "cash_flow_statements"
+            }
+    run(check())
+
+def test_invalid_tool_parameters_are_rejected_before_execution():
+    count = {"calls": 0}
+    def dummy(ticker: str):
+        count["calls"] += 1
+        return ticker
+    executor = ToolExecutor()
+    executor.register("dummy", dummy)
+    with pytest.raises(ValueError, match="Invalid arguments"):
+        run(executor.execute("dummy", {"symbol": "AAPL"}))
+    assert count["calls"] == 0

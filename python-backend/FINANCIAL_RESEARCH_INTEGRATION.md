@@ -47,3 +47,16 @@ Operational acceptance requires a configured real provider, an actual CLI resear
 ## Explicit remaining limitations
 
 This implementation provides a source-backed adapter and the authoritative CLI-to-agent path, not every optional finance feature. Company profile enrichment, SEC filing full-text extraction, extensive balance-sheet calculations, financial-news classification, provider failover, multi-worker session locking, and true token-level progress streaming need separate implementation and validation. Provider output shapes and entitlement tiers require real-credential verification. Model selection from the old CLI is deliberately disabled as misleading; LLM_MODEL on the Python backend is authoritative. Existing legacy direct-LLM /query route remains available outside the CLI.
+
+## Follow-up bug audit
+
+The follow-up review tightened source validation and cross-runtime execution:
+- Removed undefined TS AgentCallbacks usage from the active hook.
+- Removed fabricated completed-phase indicators. CLI shows generic backend research progress until completion.
+- Added incremental size-bounded SSE parsing and an overall client deadline.
+- Added stale/cancelled execution-generation guards and response-render cancellation cleanup.
+- Added Python tool signature preflight and prevented retry loops for invalid arguments or provider-final errors.
+- Added strict ticker and positive-finite-price checks, malformed historical close detection, provider Retry-After handling, bounded financial data retrieval, and explicit partial-statement metadata.
+- Added deterministic regression coverage for financial corruption, report-period mismatch, malformed SSE, and cancelled/stale UI races (where applicable).
+
+**Remaining gates:** GitHub Actions jobs still report failure with empty step arrays and missing downloadable logs. Neither passing Python/Bun suites nor a real Financial Datasets call can be claimed. The current CLI cancellation guarantees local transport abort only; cancellation of Python work across disconnects/multiple ASGI workers still requires an operational test and explicit execution-state ownership. Legacy direct-LLM /query remains available outside the CLI. Treat the PR as draft until independently executed validations succeed.

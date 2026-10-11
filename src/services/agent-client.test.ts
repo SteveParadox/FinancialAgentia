@@ -60,3 +60,9 @@ test('missing terminal agent answer is not reported as successful', async () => 
   await expect(executeAgentQuery('AAPL', null, new AbortController().signal))
     .rejects.toThrow('no terminal answer');
 });
+
+test('oversized backend event data is rejected without accumulating unbounded memory', async () => {
+  globalThis.fetch = async () => new Response('X'.repeat(200_001));
+  await expect(executeAgentQuery('AAPL', null, new AbortController().signal))
+    .rejects.toThrow('response too large');
+});
