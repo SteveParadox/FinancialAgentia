@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any
 import threading
 import json
 import os
+from datetime import datetime
 from ..utils.message_history import MessageHistory
 
 
@@ -110,6 +111,7 @@ class RedisSessionStore:
         self.redis_url = redis_url
         self.default_ttl = default_ttl
         self.client = redis.from_url(redis_url, decode_responses=True)
+        self.client.ping()  # Required configured store must be reachable at startup.
         self._prefix = "session:"
     
     def get(self, session_id: str, default: Optional[MessageHistory] = None) -> MessageHistory:
@@ -135,14 +137,15 @@ class RedisSessionStore:
                 
                 # Restore messages
                 for msg_data in obj.get("messages", []):
-                    history._messages.append(Message(**msg_data))
+                    record = dict(msg_data)
+                    record["timestamp"] = datetime.fromisoformat(record["timestamp"]) if record.get("timestamp") else datetime.now()
+                    history._messages.append(Message(**record))
                     history._next_id = max(history._next_id, msg_data["id"] + 1)
                 
                 return history
             return default or MessageHistory()
         except Exception as e:
-            print(f"[RedisSessionStore] Warning: failed to retrieve session {session_id}: {e}")
-            return default or MessageHistory()
+            raise RuntimeError(f"Redis session read failed: {session_id}") from e
     
     def set(self, session_id: str, history: MessageHistory) -> None:
         """Store or update a session's message history in Redis.
@@ -163,13 +166,15 @@ class RedisSessionStore:
                         "query": msg.query,
                         "answer": msg.answer,
                         "summary": msg.summary,
+                        "timestamp": msg.timestamp.isoformat(),
+                        "embedding_hash": msg.embedding_hash,
                     }
                     for msg in history._messages
                 ],
             }
             self.client.setex(key, self.default_ttl, json.dumps(data))
         except Exception as e:
-            print(f"[RedisSessionStore] Warning: failed to store session {session_id}: {e}")
+            raise RuntimeError(f"Redis session write failed: {session_id}") from e
     
     def delete(self, session_id: str) -> None:
         """Delete a session from Redis.
@@ -181,7 +186,7 @@ class RedisSessionStore:
             key = f"{self._prefix}{session_id}"
             self.client.delete(key)
         except Exception as e:
-            print(f"[RedisSessionStore] Warning: failed to delete session {session_id}: {e}")
+            raise RuntimeError(f"Redis session delete failed: {session_id}") from e
     
     def exists(self, session_id: str) -> bool:
         """Check if a session exists in Redis.
@@ -196,8 +201,7 @@ class RedisSessionStore:
             key = f"{self._prefix}{session_id}"
             return bool(self.client.exists(key))
         except Exception as e:
-            print(f"[RedisSessionStore] Warning: failed to check session {session_id}: {e}")
-            return False
+            raise RuntimeError(f"Redis session lookup failed: {session_id}") from e
     
     def __repr__(self) -> str:
         return f"<RedisSessionStore url={self.redis_url}>"
