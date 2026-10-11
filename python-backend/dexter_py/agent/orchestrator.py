@@ -236,6 +236,7 @@ class Orchestrator:
             f"Reflection: {context.reflection.model_dump_json() if context.reflection else 'none'}"
         )
         parts: List[str] = []
+        total_chars = 0
         async for chunk in self.llm.stream_text(
             prompt=prompt,
             system_prompt=(
@@ -246,7 +247,8 @@ class Orchestrator:
         ):
             if chunk:
                 parts.append(chunk)
-                if sum(len(part) for part in parts) > self.MAX_ANSWER_CHARS:
+                total_chars += len(chunk)
+                if total_chars > self.MAX_ANSWER_CHARS:
                     raise OrchestratorError("Answer exceeds maximum permitted length")
         answer = "".join(parts)
         if not answer.strip():
