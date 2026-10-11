@@ -188,6 +188,8 @@ class Orchestrator:
             prompt=prompt, output_model=Plan, system_prompt=system_prompt,
             temperature=0.2,
         )
+        if len(plan.tasks) > 10 or any(len(task.tool_calls) > 5 for task in plan.tasks):
+            raise ValueError("Plan exceeds execution task/tool budget")
         prefix = f"iter{context.iteration}_"
         original_ids = [task.id for task in plan.tasks]
         if len(original_ids) != len(set(original_ids)):

@@ -113,7 +113,10 @@ class FinancialDatasetsClient:
                 response.raise_for_status()
                 if len(response.content) > 2_000_000:
                     raise FinancialDataError("Provider response size exceeded limit")
-                raw = response.json()
+                try:
+                    raw = response.json()
+                except ValueError as exc:
+                    raise FinancialDataError("Invalid JSON from financial provider") from exc
                 if not isinstance(raw, dict) or not raw.get(field):
                     raise FinancialDataError("Provider returned no usable " + field)
                 payload = raw[field]
@@ -153,7 +156,7 @@ class FinancialDatasetsClient:
         if not isinstance(income, dict) or not isinstance(balance, dict):
             raise FinancialDataError("Malformed financial statement entries")
         period_end = income.get("report_period")
-        if not period_end or period_end != balance.get("report_period") or income.get("currency") != balance.get("currency"):
+        if not period_end or not income.get("currency") or period_end != balance.get("report_period") or income.get("currency") != balance.get("currency"):
             raise FinancialDataError("Financial statement currency or period mismatch")
 
         def metric(item: dict, key: str) -> Decimal | None:
