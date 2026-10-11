@@ -71,7 +71,7 @@ from ..utils._utils import (
     LLMParseError,
 )
 DEFAULT_PROVIDER = "openai"
-DEFAULT_MODEL = "ollama-qwen3-coder:480b-cloud" # Local Ollama by default
+DEFAULT_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")  # Explicit provider selection
 # DEFAULT_MODEL = "ollama-mistral:70b"  
 DEFAULT_SYSTEM_PROMPT = (
     "You are FinancialAgentia, an autonomous financial research agent.\n"
