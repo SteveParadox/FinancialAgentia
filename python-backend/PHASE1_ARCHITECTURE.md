@@ -75,8 +75,9 @@ process. Distributed sessions require cross-process locking in a later phase.
 
 GET /health is a liveness signal. GET /ready separately reports whether core
 components were initialized and whether the configured model provider appears
-configured. It does NOT contact a paid provider or certify financial-tool
-coverage. The financial_tools_registered field is false until real Python
+configured. It does NOT contact a paid provider. Readiness remains HTTP 503
+until a provider is configured AND executable financial tools have been
+registered. The financial_tools_registered field is false until real Python
 tools are explicitly registered.
 
 ## Contracts
