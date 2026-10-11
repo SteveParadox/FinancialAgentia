@@ -8,6 +8,7 @@ import structlog
 from ..schemas import Plan
 from ...exceptions import TaskExecutionError
 from ...tools.financial_datasets import FinancialDataError
+from ..tool_executor import ToolCircuitOpen
 
 logger = structlog.get_logger(__name__)
 
@@ -94,7 +95,7 @@ class ExecutePhase:
                             task.error = str(exc)
                             # Non-retryable: provider has already exhausted its own
                             # bounded HTTP retries, and bad arguments will not recover.
-                            if isinstance(exc, (FinancialDataError, ValueError, TypeError)):
+                            if isinstance(exc, (FinancialDataError, ToolCircuitOpen, ValueError, TypeError)):
                                 break
                             if attempt < task.max_retries:
                                 logger.warning("task_retry", task_id=task.id, attempt=attempt + 1)

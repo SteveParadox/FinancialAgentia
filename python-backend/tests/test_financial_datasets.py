@@ -164,3 +164,20 @@ def test_invalid_tool_parameters_are_rejected_before_execution():
     with pytest.raises(ValueError, match="Invalid arguments"):
         run(executor.execute("dummy", {"symbol": "AAPL"}))
     assert count["calls"] == 0
+
+def test_async_circuit_breaker_stops_repeated_provider_failures():
+    from dexter_py.agent.tool_executor import ToolCircuitOpen
+    executor = ToolExecutor()
+    invoked = {"count": 0}
+    async def broken(ticker: str):
+        invoked["count"] += 1
+        raise RuntimeError("Provider connection refused")
+    executor.register("broken", broken, fail_max=2)
+    async def check():
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="Provider connection refused"):
+                await executor.execute("broken", {"ticker": "AAPL"})
+        with pytest.raises(ToolCircuitOpen):
+            await executor.execute("broken", {"ticker": "AAPL"})
+    run(check())
+    assert invoked["count"] == 2
