@@ -1,5 +1,6 @@
 # tool_executor.py
 import asyncio
+from inspect import signature
 from typing import Dict, Any, Callable
 import structlog
 
@@ -32,7 +33,13 @@ class ToolExecutor:
         
         cb = self._circuit_breakers.get(tool_name)
         func = self.tools[tool_name]
-        
+        if not isinstance(parameters, dict):
+            raise ValueError("Tool parameters must be an object")
+        try:
+            signature(func).bind(**parameters)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid arguments for tool {tool_name}") from exc
+
         logger.info("tool_execution", tool=tool_name, params=list(parameters.keys()))
         
         try:

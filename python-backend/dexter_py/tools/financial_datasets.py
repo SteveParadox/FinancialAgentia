@@ -52,6 +52,43 @@ def validate_limit(value: int) -> int:
         raise ValueError("limit must be 1 to 100")
     return value
 
+def validate_payload(operation: str, payload: Any, ticker: str) -> None:
+    """Reject masquerading or structurally invalid financial data before agent access."""
+    if isinstance(payload, dict):
+        reported = payload.get("ticker")
+        if reported is not None and (not isinstance(reported, str) or
+                                     reported.upper() != ticker):
+            raise FinancialDataError("Provider returned a different ticker")
+    elif isinstance(payload, list):
+        if not payload or not all(isinstance(row, dict) for row in payload):
+            raise FinancialDataError("Provider returned malformed data records")
+        for row in payload:
+            reported = row.get("ticker")
+            if reported is not None and (not isinstance(reported, str) or
+                                         reported.upper() != ticker):
+                raise FinancialDataError("Provider returned a different ticker")
+    else:
+        raise FinancialDataError("Provider returned an invalid data structure")
+    if operation == "get_price_snapshot":
+        if not isinstance(payload, dict) or "price" not in payload:
+            raise FinancialDataError("Quote is missing its price")
+        price = payload["price"]
+        try:
+            if isinstance(price, bool):
+                raise InvalidOperation
+            value = Decimal(str(price))
+        except (InvalidOperation, ValueError, TypeError):
+            raise FinancialDataError("Quote has an invalid price") from None
+        if not value.is_finite() or value <= 0:
+            raise FinancialDataError("Quote price must be positive and finite")
+    if operation == "get_all_financial_statements":
+        if not isinstance(payload, dict) or not any(
+            isinstance(payload.get(key), list) and payload[key]
+            for key in ("income_statements", "balance_sheets", "cash_flow_statements")
+        ):
+            raise FinancialDataError("Provider returned invalid combined financial statements")
+
+
 class FinancialDatasetsClient:
     def __init__(self, api_key: str, *, http_client: httpx.AsyncClient | None = None,
                  timeout: float = 12):
@@ -108,7 +145,12 @@ class FinancialDatasetsClient:
             try:
                 response = await self.http.get(ROOT + path, params=params)
                 if response.status_code in {429, 500, 502, 503, 504} and attempt < 2:
-                    await asyncio.sleep(0.2 * (2 ** attempt))
+                    retry_after = response.headers.get("retry-after", "")
+                    try:
+                        delay = max(0.0, min(float(retry_after), 3.0)) if retry_after else 0.2 * (2 ** attempt)
+                    except ValueError:
+                        delay = 0.2 * (2 ** attempt)
+                    await asyncio.sleep(delay)
                     continue
                 response.raise_for_status()
                 if len(response.content) > 2_000_000:
@@ -120,9 +162,13 @@ class FinancialDatasetsClient:
                 if not isinstance(raw, dict) or not raw.get(field):
                     raise FinancialDataError("Provider returned no usable " + field)
                 payload = raw[field]
+                validate_payload(operation, payload, ticker)
                 data_time = None
                 if isinstance(payload, dict):
                     data_time = payload.get("time") or payload.get("date") or payload.get("report_period")
+                elif isinstance(payload, list) and payload:
+                    data_time = (payload[0].get("time") or payload[0].get("date")
+                                 or payload[0].get("report_period"))
                 result = {"ticker": ticker,
                           "provider": "financialdatasets.ai", "source_url": source_url,
                           "retrieved_at": datetime.now(timezone.utc).isoformat(),
