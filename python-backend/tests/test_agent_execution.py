@@ -127,7 +127,7 @@ def test_missing_tools_not_fake_success():
     async def scenario():
         agent = Orchestrator("gpt-4o-mini", max_iterations=1,
                              llm_client=FakeLLM(), tool_executor=ToolExecutor())
-        with pytest.raises(OrchestratorError, match="failed or were skipped"):
+        with pytest.raises(ValueError, match="Unknown tools"):
             await agent.run("Price check")
 
     asyncio.run(scenario())
@@ -205,5 +205,60 @@ def test_blank_answer_fails():
                              tool_executor=ToolExecutor())
         with pytest.raises(OrchestratorError, match="empty response"):
             await agent.run("Question")
+
+    asyncio.run(scenario())
+
+def test_unknown_tool_rejected_before_prior_valid_task_runs():
+    async def scenario():
+        called = []
+        tools = ToolExecutor()
+        tools.register("valid", lambda: called.append("ran"))
+        context = ExecutionContext(
+            run_id="unknown", query="test", model="gpt-4o-mini",
+            current_plan=Plan(summary="unknown tool", tasks=[
+                PlanTask(id="valid", description="good",
+                         tool_calls=[ToolCall(tool="valid")]),
+                PlanTask(id="invalid", description="invalid",
+                         depends_on=["valid"],
+                         tool_calls=[ToolCall(tool="nonexistent")]),
+            ]),
+        )
+        agent = Orchestrator("gpt-4o-mini", llm_client=FakeLLM(),
+                             tool_executor=tools)
+        with pytest.raises(ValueError, match="Unknown tools"):
+            await agent._execute(context)
+        assert called == []
+
+    asyncio.run(scenario())
+
+
+def test_successful_tool_call_is_not_repeated_after_later_tool_failure():
+    class Flaky:
+        def __init__(self):
+            self.called = {"first": 0, "second": 0}
+
+        async def execute(self, name, params):
+            self.called[name] += 1
+            if name == "second" and self.called[name] == 1:
+                raise RuntimeError("temporary")
+            return name
+
+    async def scenario():
+        tool = Flaky()
+        context = ExecutionContext(
+            run_id="retry", query="test", model="gpt-4o-mini",
+            current_plan=Plan(summary="two tools", tasks=[
+                PlanTask(id="both", description="needs tools",
+                         max_retries=1,
+                         tool_calls=[
+                             ToolCall(tool="first"), ToolCall(tool="second"),
+                         ]),
+            ]),
+        )
+        agent = Orchestrator("gpt-4o-mini", llm_client=FakeLLM(),
+                             tool_executor=tool)
+        await agent._execute(context)
+        assert tool.called == {"first": 1, "second": 2}
+        assert context.current_plan.tasks[0].status == "completed"
 
     asyncio.run(scenario())
