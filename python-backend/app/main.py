@@ -33,6 +33,7 @@ from dexter_py.model.llm import call_llm_stream
 from dexter_py.utils.session_store import get_session_store
 from dexter_py.agent.orchestrator import Orchestrator
 from dexter_py.agent.tool_executor import ToolExecutor
+from dexter_py.utils._utils import LLMConfig, configure_llm
 
 
 # Configure structlog for JSON output
@@ -55,6 +56,7 @@ async def lifespan(application: FastAPI):
     application.state.session_store = get_session_store()
     model = os.getenv("LLM_MODEL", "gpt-4o-mini")
     iterations = int(os.getenv("AGENT_MAX_ITERATIONS", "3"))
+    configure_llm(LLMConfig(default_model=model))
     # Real tools are registered explicitly; the Python scaffold has no
     # production financial feed. Never register demonstration prices here.
     tools = ToolExecutor()
@@ -111,9 +113,26 @@ async def health():
 @app.get("/ready")
 async def ready():
     state = app.state
-    available = all(hasattr(state, key) for key in ("session_store", "orchestrator"))
-    available = available and state.orchestrator.execute_phase.tool_executor is not None
-    return JSONResponse({"ready": bool(available)}, status_code=200 if available else 503)
+    initialized = all(hasattr(state, key) for key in ("session_store", "orchestrator"))
+    initialized = initialized and state.orchestrator.execute_phase.tool_executor is not None
+    model = state.orchestrator.model if initialized else ""
+    provider_configured = (
+        bool(os.getenv("ANTHROPIC_API_KEY")) if model.startswith("claude-") else
+        bool(os.getenv("GOOGLE_API_KEY")) if model.startswith("gemini-") else
+        bool(os.getenv("OLLAMA_API_KEY")) if model.startswith("ollama-") and model.endswith("-cloud") else
+        True if model.startswith("ollama-") else
+        bool(os.getenv("OPENAI_API_KEY")) if model.startswith(("gpt-", "o1", "o3", "o4")) else
+        False
+    )
+    ready = initialized and provider_configured
+    tools_registered = (len(state.orchestrator.execute_phase.tool_executor.tools)
+                        if initialized and hasattr(state.orchestrator.execute_phase.tool_executor, "tools") else 0)
+    return JSONResponse(
+        {"ready": bool(ready), "agent_initialized": bool(initialized),
+         "model_provider_configured": bool(provider_configured),
+         "financial_tools_registered": bool(tools_registered)},
+        status_code=200 if ready else 503,
+    )
 
 
 @app.get("/metrics")
