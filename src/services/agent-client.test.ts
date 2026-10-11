@@ -37,3 +37,26 @@ test('authenticated remote HTTP is rejected', async () => {
   process.env.FINANCIALAGENTIA_BACKEND_URL = 'http://example.org:8000';
   await expect(executeAgentQuery('AAPL', null, new AbortController().signal)).rejects.toThrow('HTTPS');
 });
+
+test('fragmented SSE with progress events returns only the verified terminal answer', async () => {
+  process.env.FINANCIALAGENTIA_BACKEND_URL = 'http://127.0.0.1:8000';
+  const chunks = [
+    'data: {"type":"progress"}\\n\\n'.replace(/\\n/g, '\n'),
+    'data: {"type":"answer","content":"Source verified","session_id":"00000000-0000-4000-8000-000000000001"}\n',
+    '\n',
+  ];
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+      controller.close();
+    },
+  }));
+  const answer = await executeAgentQuery('AAPL', null, new AbortController().signal);
+  expect(answer.content).toBe('Source verified');
+});
+
+test('missing terminal agent answer is not reported as successful', async () => {
+  globalThis.fetch = async () => new Response('data: {"type":"progress"}\n\n');
+  await expect(executeAgentQuery('AAPL', null, new AbortController().signal))
+    .rejects.toThrow('no terminal answer');
+});

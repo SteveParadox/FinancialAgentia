@@ -101,3 +101,27 @@ def test_financial_ratios_reject_mismatched_reporting_periods():
             with pytest.raises(FinancialDataError, match="mismatch"):
                 await provider.financial_ratios("AAPL")
     run(check())
+
+def test_invalid_quote_fails_closed():
+    async def check():
+        for invalid in ({"ticker": "MSFT", "price": 200},
+                        {"ticker": "AAPL", "price": -4},
+                        {"ticker": "AAPL", "price": "NaN"},
+                        {"ticker": "AAPL", "time": "2026-10-11"}):
+            async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda req: httpx.Response(200, json={"snapshot": invalid})
+            )) as http:
+                provider = FinancialDatasetsClient("test-secret", http_client=http)
+                with pytest.raises(FinancialDataError):
+                    await provider.retrieve("get_price_snapshot", "AAPL")
+    run(check())
+
+def test_malformed_financial_data_is_not_marked_success():
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda req: httpx.Response(200, json={"financials": {"unexpected": True}})
+        )) as http:
+            provider = FinancialDatasetsClient("test-secret", http_client=http)
+            with pytest.raises(FinancialDataError, match="combined"):
+                await provider.retrieve("get_all_financial_statements", "AAPL", period="annual", limit=1)
+    run(check())
