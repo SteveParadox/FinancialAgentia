@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request, HTTPException, Cookie
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import AsyncGenerator, Optional
 from contextlib import asynccontextmanager
 from weakref import WeakValueDictionary
@@ -116,6 +116,13 @@ REQUEST_COUNT = Counter("dexter_requests_total", "Total requests received")
 
 class Query(BaseModel):
     prompt: str = Field(min_length=1, max_length=10000)
+
+    @field_validator("prompt")
+    @classmethod
+    def reject_whitespace(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("prompt must not be blank")
+        return value
 
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
@@ -445,6 +452,13 @@ async def query(request: Request, q: Query):
 class AgentQuery(BaseModel):
     """Request body for agent query with session support."""
     query: str = Field(min_length=1, max_length=10000)
+
+    @field_validator("query")
+    @classmethod
+    def reject_whitespace(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query must not be blank")
+        return value
     session_id: Optional[str] = None  # Auto-generated if not provided
 
 
