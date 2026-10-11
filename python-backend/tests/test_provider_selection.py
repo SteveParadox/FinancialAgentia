@@ -33,3 +33,53 @@ def test_ollama_cloud_without_key_fails(monkeypatch):
     monkeypatch.setattr(llm, "ChatOllama", lambda **kwargs: object())
     with pytest.raises(RuntimeError, match="OLLAMA_API_KEY"):
         llm.get_chat_model("ollama-test-cloud")
+
+def test_llm_client_cache_is_keyed_by_model(monkeypatch):
+    import asyncio
+    from dexter_py.utils import _utils
+
+    built = []
+    def fake_factory(model):
+        built.append(model)
+        return object()
+
+    monkeypatch.setattr(llm, "get_chat_model", fake_factory)
+    _utils.configure_llm(_utils.LLMConfig(default_model="gpt-4o-mini"))
+    async def scenario():
+        first = await _utils.get_llm_client("gpt-4o-mini")
+        second = await _utils.get_llm_client("gpt-4o")
+        again = await _utils.get_llm_client("gpt-4o-mini")
+        assert first is again
+        assert first is not second
+        assert built == ["gpt-4o-mini", "gpt-4o"]
+    asyncio.run(scenario())
+    _utils.configure_llm(_utils.LLMConfig())
+
+
+def test_streaming_does_not_wait_for_callback_completion(monkeypatch):
+    import asyncio
+    from dexter_py.utils._utils import LLMConfig
+
+    class Chunk:
+        def __init__(self, content):
+            self.content = content
+
+    class FakeStreamingModel:
+        async def astream(self, messages, **kwargs):
+            yield Chunk("hello")
+            yield Chunk(" world")
+
+    async def client(model):
+        return FakeStreamingModel()
+
+    monkeypatch.setattr(llm, "get_llm_client", client)
+    monkeypatch.setattr(llm, "get_llm_config",
+                        lambda: LLMConfig(default_model="gpt-4o-mini", timeout=0.2))
+
+    async def scenario():
+        result = []
+        async for token in llm.call_llm_stream("TEST"):
+            result.append(token)
+        assert result == ["hello", " world"]
+
+    asyncio.run(scenario())
