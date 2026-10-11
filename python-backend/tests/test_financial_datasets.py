@@ -63,3 +63,41 @@ def test_registered_tool_signatures():
     assert "get_news" in executor.tools
     assert "ticker" in executor.tool_signatures["get_news"]
     run(provider.close())
+
+
+def test_financial_ratios_preserve_source_and_period():
+    statements = {
+        "financials": {
+            "income_statements": [
+                {"report_period": "2025-12-31", "currency": "USD", "revenue": 100, "net_income": 20}
+            ],
+            "balance_sheets": [
+                {"report_period": "2025-12-31", "currency": "USD", "shareholders_equity": 40}
+            ],
+        }
+    }
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda req: httpx.Response(200, json=statements)
+        )) as http:
+            provider = FinancialDatasetsClient("test-key", http_client=http)
+            answer = await provider.financial_ratios("AAPL")
+            assert answer["data"]["net_profit_margin"] == "0.2"
+            assert answer["data"]["return_on_period_end_equity"] == "0.5"
+            assert answer["report_period"] == "2025-12-31"
+            assert "financials" in answer["source_url"]
+    run(check())
+
+def test_financial_ratios_reject_mismatched_reporting_periods():
+    statements = {"financials": {
+        "income_statements": [{"report_period": "2025-12-31", "currency": "USD", "revenue": 100, "net_income": 20}],
+        "balance_sheets": [{"report_period": "2024-12-31", "currency": "USD", "shareholders_equity": 40}],
+    }}
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda req: httpx.Response(200, json=statements)
+        )) as http:
+            provider = FinancialDatasetsClient("test-key", http_client=http)
+            with pytest.raises(FinancialDataError, match="mismatch"):
+                await provider.financial_ratios("AAPL")
+    run(check())
