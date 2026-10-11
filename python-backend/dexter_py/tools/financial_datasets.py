@@ -69,6 +69,16 @@ def validate_payload(operation: str, payload: Any, ticker: str) -> None:
                 raise FinancialDataError("Provider returned a different ticker")
     else:
         raise FinancialDataError("Provider returned an invalid data structure")
+    if operation == "get_prices":
+        for row in payload:
+            if "close" not in row:
+                raise FinancialDataError("Historical price row lacks close")
+            try:
+                close = Decimal(str(row["close"]))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise FinancialDataError("Historical price contains invalid close") from exc
+            if not close.is_finite() or close <= 0:
+                raise FinancialDataError("Historical price must be finite and positive")
     if operation == "get_price_snapshot":
         if not isinstance(payload, dict) or "price" not in payload:
             raise FinancialDataError("Quote is missing its price")
@@ -166,13 +176,25 @@ class FinancialDatasetsClient:
                 data_time = None
                 if isinstance(payload, dict):
                     data_time = payload.get("time") or payload.get("date") or payload.get("report_period")
+                    if operation == "get_all_financial_statements":
+                        income = payload.get("income_statements") or []
+                        if income and isinstance(income[0], dict):
+                            data_time = income[0].get("report_period")
                 elif isinstance(payload, list) and payload:
                     data_time = (payload[0].get("time") or payload[0].get("date")
                                  or payload[0].get("report_period"))
+                missing_statements = []
+                if operation == "get_all_financial_statements":
+                    missing_statements = [
+                        key for key in ("income_statements", "balance_sheets", "cash_flow_statements")
+                        if not payload.get(key)
+                    ]
                 result = {"ticker": ticker,
                           "provider": "financialdatasets.ai", "source_url": source_url,
                           "retrieved_at": datetime.now(timezone.utc).isoformat(),
-                          "data_timestamp": data_time, "data": payload}
+                          "data_timestamp": data_time, "data": payload,
+                          "completeness": "partial" if missing_statements else "complete",
+                          "missing_statements": missing_statements}
                 if len(self.cache) >= 128:
                     self.cache.pop(next(iter(self.cache)))
                 ttl = 10 if operation == "get_price_snapshot" else 30 if operation == "get_news" else 120
@@ -202,7 +224,11 @@ class FinancialDatasetsClient:
         if not isinstance(income, dict) or not isinstance(balance, dict):
             raise FinancialDataError("Malformed financial statement entries")
         period_end = income.get("report_period")
-        if not period_end or not income.get("currency") or period_end != balance.get("report_period") or income.get("currency") != balance.get("currency"):
+        if (not period_end or not income.get("currency") or
+                period_end != balance.get("report_period") or
+                income.get("currency") != balance.get("currency") or
+                (income.get("period") and balance.get("period") and
+                 income["period"] != balance["period"])):
             raise FinancialDataError("Financial statement currency or period mismatch")
 
         def metric(item: dict, key: str) -> Decimal | None:
