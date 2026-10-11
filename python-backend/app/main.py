@@ -3,6 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from pydantic import BaseModel
 from typing import AsyncGenerator, Optional
+from contextlib import asynccontextmanager
+from weakref import WeakValueDictionary
+import asyncio
 import os
 import json
 import uuid
@@ -26,9 +29,10 @@ from slowapi.errors import RateLimitExceeded
 # Metrics
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 
-from ..dexter_py.model.llm import call_llm_stream
-from ..dexter_py.utils.session_store import get_session_store
-from ..dexter_py.agent.orchestrator import Orchestrator, AgentOptions
+from dexter_py.model.llm import call_llm_stream
+from dexter_py.utils.session_store import get_session_store
+from dexter_py.agent.orchestrator import Orchestrator
+from dexter_py.agent.tool_executor import ToolExecutor
 
 
 # Configure structlog for JSON output
@@ -42,7 +46,35 @@ structlog.configure(
 logger = structlog.get_logger("dexter_backend")
 
 
-app = FastAPI(title="Dexter Python Backend")
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    """Construct dependencies once, fail visibly, clean up when stopped."""
+    logger.info("backend_starting")
+    application.state.recent_requests = deque(maxlen=1000)
+    application.state.session_locks = WeakValueDictionary()
+    application.state.session_store = get_session_store()
+    model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    iterations = int(os.getenv("AGENT_MAX_ITERATIONS", "3"))
+    # Real tools are registered explicitly; the Python scaffold has no
+    # production financial feed. Never register demonstration prices here.
+    tools = ToolExecutor()
+    application.state.orchestrator = Orchestrator(
+        model=model, max_iterations=iterations, tool_executor=tools,
+    )
+    logger.info("backend_initialized", model=model)
+    try:
+        yield
+    finally:
+        for dependency in (application.state.session_store, tools):
+            closer = getattr(dependency, "close", None)
+            if callable(closer):
+                outcome = closer()
+                if asyncio.iscoroutine(outcome):
+                    await outcome
+        logger.info("backend_shutdown")
+
+
+app = FastAPI(title="Dexter Python Backend", lifespan=lifespan)
 
 # Allow local dev frontends to call the API
 app.add_middleware(
@@ -66,32 +98,6 @@ REQUEST_COUNT = Counter("dexter_requests_total", "Total requests received")
 class Query(BaseModel):
     prompt: str
 
-@app.on_event("startup")
-async def startup():
-    logger.info(event="starting dexter python backend")
-
-    # Initialize a deque to hold recent requests for dashboarding
-    app.state.recent_requests = deque(maxlen=1000)
-    
-    # Initialize session store (in-memory or Redis based on env var)
-    app.state.session_store = get_session_store()
-    logger.info("Session store initialized", store=repr(app.state.session_store))
-    
-    # Initialize agent orchestrator
-    app.state.orchestrator = Orchestrator(
-        AgentOptions(
-            model=os.getenv("LLM_MODEL", "gpt-4"),
-        )
-    )
-    logger.info("Agent orchestrator initialized", model=os.getenv("LLM_MODEL", "gpt-4"))
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    logger.info(event="shutting down dexter python backend")
-
-
-
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
     return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
@@ -104,8 +110,10 @@ async def health():
 
 @app.get("/ready")
 async def ready():
-    # For now readiness is same as health; extend to check LLM provider connectivity
-    return {"ready": True}
+    state = app.state
+    available = all(hasattr(state, key) for key in ("session_store", "orchestrator"))
+    available = available and state.orchestrator.execute_phase.tool_executor is not None
+    return JSONResponse({"ready": bool(available)}, status_code=200 if available else 503)
 
 
 @app.get("/metrics")
@@ -415,21 +423,25 @@ async def agent_query(request: Request, q: AgentQuery):
     )
     
     # Get session store and orchestrator
-    session_store = getattr(app.state, "session_store", get_session_store())
-    orchestrator = getattr(app.state, "orchestrator")
-    
-    # Load message history from session
-    message_history = session_store.get(session_id)
+    session_store = request.app.state.session_store
+    orchestrator = request.app.state.orchestrator
+    locks = request.app.state.session_locks
+    lock = locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        locks[session_id] = lock
     
     async def event_stream() -> AsyncGenerator[bytes, None]:
         try:
-            # Run agent with session context
-            final_answer = await orchestrator.run(
-                query=q.query,
-                message_history=message_history,
-                session_id=session_id,
-                session_store=session_store,
-            )
+            async with lock:
+                history = session_store.get(session_id)
+                final_answer = await orchestrator.run(
+                    query=q.query,
+                    message_history=history,
+                )
+                # Only persist completed answers, never failed attempts.
+                await history.add_message(q.query, final_answer)
+                session_store.set(session_id, history)
             
             # Stream the final answer
             payload = {
@@ -483,7 +495,7 @@ async def get_history(request: Request, session_id: Optional[str] = None):
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id required")
     
-    session_store = getattr(app.state, "session_store", get_session_store())
+    session_store = request.app.state.session_store
     history = session_store.get(session_id)
     
     if not history.has_messages():
@@ -500,7 +512,7 @@ async def get_history(request: Request, session_id: Optional[str] = None):
             "answer": msg.answer[:500],  # Truncate for preview
             "summary": msg.summary,
         }
-        for msg in history.get_all()
+        for msg in history.get_messages()
     ]
     
     return JSONResponse({
@@ -528,7 +540,7 @@ async def clear_history(request: Request, session_id: Optional[str] = None):
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id required")
     
-    session_store = getattr(app.state, "session_store", get_session_store())
+    session_store = request.app.state.session_store
     session_store.delete(session_id)
     
     logger.info("Session history cleared", session_id=session_id)
