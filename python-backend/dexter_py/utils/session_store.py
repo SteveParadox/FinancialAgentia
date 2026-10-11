@@ -6,6 +6,7 @@ Each session is identified by a unique session ID (UUID) and stores MessageHisto
 
 from typing import Optional, Dict, Any
 import threading
+import time
 import json
 import os
 from datetime import datetime
@@ -27,7 +28,10 @@ class InMemorySessionStore:
         """
         self._store: Dict[str, MessageHistory] = {}
         self._lock = threading.RLock()
+        if default_expiry <= 0:
+            raise ValueError("default_expiry must be positive")
         self.default_expiry = default_expiry
+        self._expires_at: Dict[str, float] = {}
     
     def get(self, session_id: str, default: Optional[MessageHistory] = None) -> MessageHistory:
         """Retrieve a session's message history.
@@ -40,7 +44,11 @@ class InMemorySessionStore:
             MessageHistory object for the session, or default if not found
         """
         with self._lock:
-            return self._store.get(session_id, default or MessageHistory())
+            expires_at = self._expires_at.get(session_id)
+            if expires_at is not None and expires_at <= time.monotonic():
+                self._store.pop(session_id, None)
+                self._expires_at.pop(session_id, None)
+            return self._store.get(session_id) or (default if default is not None else MessageHistory())
     
     def set(self, session_id: str, history: MessageHistory) -> None:
         """Store or update a session's message history.
@@ -51,6 +59,7 @@ class InMemorySessionStore:
         """
         with self._lock:
             self._store[session_id] = history
+            self._expires_at[session_id] = time.monotonic() + self.default_expiry
     
     def delete(self, session_id: str) -> None:
         """Delete a session's message history.
@@ -60,6 +69,7 @@ class InMemorySessionStore:
         """
         with self._lock:
             self._store.pop(session_id, None)
+            self._expires_at.pop(session_id, None)
     
     def exists(self, session_id: str) -> bool:
         """Check if a session exists.
@@ -71,12 +81,18 @@ class InMemorySessionStore:
             True if session exists, False otherwise
         """
         with self._lock:
+            expires_at = self._expires_at.get(session_id)
+            if expires_at is not None and expires_at <= time.monotonic():
+                self._store.pop(session_id, None)
+                self._expires_at.pop(session_id, None)
+                return False
             return session_id in self._store
     
     def clear_all(self) -> None:
         """Clear all sessions from store."""
         with self._lock:
             self._store.clear()
+            self._expires_at.clear()
     
     def __repr__(self) -> str:
         with self._lock:
