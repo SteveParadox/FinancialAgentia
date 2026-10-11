@@ -73,6 +73,7 @@ def configure_llm(config: LLMConfig) -> None:
     global _llm_config, _client_instance
     _llm_config = config
     _client_instance = None
+    _client_instances.clear()
 
 
 def get_llm_config() -> LLMConfig:
@@ -84,9 +85,9 @@ def get_llm_config() -> LLMConfig:
 # Client Initialization
 # ============================================================================
 
-_client_instance = None
+_client_instance = None  # Legacy name retained for existing callers.
+_client_instances = {}
 _client_lock = asyncio.Lock()
-
 
 # LangChain provider imports - make optional so module can be imported even if
 # some provider packages are not installed. Each provider var is initialized
@@ -116,21 +117,22 @@ except Exception:
     AsyncCallbackHandler = None
 
 
-async def get_llm_client():
-    """Cache the configured provider, never silently choose a different one."""
+async def get_llm_client(model_name: Optional[str] = None):
+    """Cache clients by selected model to prevent cross-provider/model reuse."""
     global _client_instance
-    if _client_instance is not None:
-        return _client_instance
+    model = model_name or get_llm_config().default_model
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("LLM model must be non-empty")
+    if model in _client_instances:
+        return _client_instances[model]
     async with _client_lock:
-        if _client_instance is None:
-            # Lazy import prevents a module-level llm <-> utils circular import.
+        if model not in _client_instances:
             from ..model.llm import get_chat_model
-            config = get_llm_config()
-            _client_instance = get_chat_model(config.default_model)
-            structlog.get_logger(__name__).info(
-                "llm_client_initialized", model=config.default_model
-            )
-        return _client_instance
+            client = get_chat_model(model)
+            _client_instances[model] = client
+            structlog.get_logger(__name__).info("llm_client_initialized", model=model)
+        _client_instance = _client_instances[model]
+        return _client_instances[model]
 
 
 # ============================================================================
