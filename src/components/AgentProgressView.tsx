@@ -19,6 +19,7 @@ export interface AgentProgressState {
   reflectComplete: boolean;
   tasks: Task[];
   isAnswering: boolean;
+  researchingBackend?: boolean;
 }
 
 // ============================================================================
@@ -99,6 +100,14 @@ export const AgentProgressView = React.memo(function AgentProgressView({
     isAnswering 
   } = state;
 
+  if (state.researchingBackend) {
+    return (
+      <Box marginTop={1}>
+        <Text color={colors.accent}><InkSpinner type="dots" /></Text>
+        <Text> Researching through Python backend...</Text>
+      </Box>
+    );
+  }
   return (
     <Box flexDirection="column" marginTop={1}>
       {/* Understand phase */}
