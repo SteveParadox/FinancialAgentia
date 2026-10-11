@@ -141,3 +141,42 @@ for an operational acceptance check.
 
 Phase 1 must **not** be declared production-financial-research complete
 merely because API startup, deterministic mocks, and basic agent routing work.
+
+## Follow-up audit corrections (2026-10-11)
+
+Source review found additional high-severity bugs and vulnerabilities.
+The current PR branch adds:
+
+* JWT-subject-scoped conversation storage keys. The API-key authentication
+  mode remains one **shared principal**, because a single shared API key
+  cannot identify distinct people. True multi-tenant isolation requires
+  per-user identities, not just UUID session IDs.
+* UUID session-ID validation, and same-session history reads/deletions
+  serialized with active writes in one ASGI worker.
+* In-memory TTL enforcement and periodic expired-history pruning; Redis
+  conversation timestamps and metadata survive round-trips.
+* Production startup requires JWT_SECRET or BACKEND_API_KEY and secure
+  cookies. Development retains explicit no-auth behavior.
+* Exact browser CORS origins via CORS_ORIGINS; wildcard origins are rejected.
+* Dashboard, recent-request telemetry and metrics now require the existing
+  authentication policy. Original plain browser access to /dashboard is
+  **not compatible with API-key/JWT headers without an authenticated browser
+  session or gateway**; restore that UX before declaring full dashboard
+  compatibility. Do not put API credentials in the page's HTML or JavaScript.
+* Query-body bounds, redacted prompt logging, generic external SSE errors,
+  model-keyed LLM clients and bounded native stream iteration.
+* Per-phase agent execution deadlines; model-provided task status/result
+  data is discarded before executor-generated evidence is recorded.
+* Unknown tool names are checked before any plan task executes, and
+  successfully completed calls are not retried during a task retry.
+* Configured Redis client is included in requirements.
+
+Security migration note: storage keys now namespace UUID sessions by JWT
+issuer/subject or the shared API-key principal. Old un-namespaced history
+entries require an explicit authorized migration and are not silently shared
+across users. This is intentional and may make older conversations unavailable.
+
+Validation remains BLOCKED: GitHub Actions is reporting failing jobs with no
+recorded steps/logs. The deterministic tests were committed but not executed
+successfully. Cross-runtime research integration and verified browser
+dashboard authentication are still blockers for full Phase 1 acceptance.
