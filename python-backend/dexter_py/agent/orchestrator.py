@@ -176,6 +176,13 @@ class Orchestrator:
         for task in plan.tasks:
             task.depends_on = [mapping.get(dep, dep) for dep in task.depends_on]
             task.id = mapping[task.id]
+            # Runtime evidence belongs to the executor, never to the planner LLM.
+            task.status = "pending"
+            task.attempt_count = 0
+            task.result = None
+            task.error = None
+            task.start_time = None
+            task.end_time = None
         plan.get_execution_order()
         return plan
 
