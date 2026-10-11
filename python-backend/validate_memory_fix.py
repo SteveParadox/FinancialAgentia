@@ -35,7 +35,7 @@ async def demonstrate_conversation_flow():
     print(f"\nAnswer: {answer1}")
     
     # Agent stores this in message history
-    history.add_agent_message(query1, answer1)
+    await history.add_message(query1, answer1)
     print(f"\n✓ Stored in message history")
     print(f"  Total messages: {len(history._messages)}")
     
@@ -118,7 +118,7 @@ async def demonstrate_conversation_flow():
     traders, hedge funds, and central banks. The tight bid-ask spreads and 24/5 market hours make 
     it the preferred vehicle for currency speculation and economic hedging."""
     
-    history.add_agent_message(query2, answer2)
+    await history.add_message(query2, answer2)
     
     print(f"\n✓ Added answer #2 to history")
     print(f"  Total messages: {len(history._messages)}")
