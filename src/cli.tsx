@@ -167,6 +167,7 @@ export function CLI() {
     }
     baseHandleAnswerComplete(answer);
     currentTasksRef.current = [];
+    setState('idle');
   }, [currentTurn, baseHandleAnswerComplete]);
 
   /**
@@ -183,7 +184,6 @@ export function CLI() {
         } else {
           setStatusMessage(`Error: ${e}`);
         }
-      } finally {
         setState('idle');
       }
     },
@@ -211,7 +211,7 @@ export function CLI() {
       }
 
       if (query === '/model') {
-        setState('model_select');
+        setStatusMessage('The authoritative agent model is configured on the Python backend using LLM_MODEL.');
         return;
       }
 

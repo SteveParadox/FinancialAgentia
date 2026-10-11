@@ -2,7 +2,6 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import { colors, dimensions } from '../theme.js';
 import packageJson from '../../package.json';
-import { getProviderDisplayName } from '../utils/env.js';
 
 interface IntroProps {
   provider: string;
@@ -40,7 +39,7 @@ export function Intro({ provider }: IntroProps) {
 
       <Box marginTop={1} flexDirection="column">
         <Text>Your AI assistant for deep financial research.</Text>
-        <Text color={colors.muted}>Current model provider: {getProviderDisplayName(provider)}. Type /model to change the provider.</Text>
+        <Text color={colors.muted}>Financial research uses the Python backend. Configure its model with LLM_MODEL.</Text>
       </Box>
     </Box>
   );
