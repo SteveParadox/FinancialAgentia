@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request, HTTPException, Cookie
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import AsyncGenerator, Optional
 from contextlib import asynccontextmanager
 from weakref import WeakValueDictionary
@@ -10,6 +10,7 @@ import os
 import json
 import uuid
 import time
+import hashlib
 from collections import deque
 
 # Load environment variables
@@ -81,7 +82,13 @@ app = FastAPI(title="Dexter Python Backend", lifespan=lifespan)
 # Allow local dev frontends to call the API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        value.strip() for value in os.getenv(
+            "CORS_ORIGINS",
+            "http://localhost:3000,http://localhost:5173,"
+            "http://127.0.0.1:3000,http://127.0.0.1:5173",
+        ).split(",") if value.strip()
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -98,7 +105,7 @@ REQUEST_COUNT = Counter("dexter_requests_total", "Total requests received")
 
 
 class Query(BaseModel):
-    prompt: str
+    prompt: str = Field(min_length=1, max_length=10000)
 
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
@@ -137,14 +144,16 @@ async def ready():
 
 
 @app.get("/metrics")
-async def metrics():
+async def metrics(request: Request):
+    await require_auth(request)
     data = generate_latest()
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/api/recent")
-async def api_recent():
-        """Return recent requests for dashboard consumption."""
+async def api_recent(request: Request):
+        """Return authorized operational metadata without prompt contents."""
+        await require_auth(request)
         items = list(getattr(app.state, 'recent_requests', []))
         # Convert timestamps to ISO for readability
         out = []
@@ -159,8 +168,9 @@ async def api_recent():
 
 
 @app.get("/dashboard")
-async def dashboard():
-        """Serve a minimal dashboard page that fetches /api/recent and /metrics."""
+async def dashboard(request: Request):
+        """Serve the operational dashboard only to authorized callers."""
+        await require_auth(request)
         html = r'''
 <!doctype html>
 <html>
@@ -313,6 +323,29 @@ async def require_auth(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+def _session_storage_key(request: Request, session_id: str) -> str:
+    """Bind sessions to JWT subject; API key mode is one shared principal.
+
+    A shared API key is one account, not a multi-user identity system.
+    """
+    try:
+        parsed = uuid.UUID(session_id)
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=400, detail="Invalid session ID")
+    if str(parsed) != session_id:
+        raise HTTPException(status_code=400, detail="Invalid session ID")
+    claims = getattr(request.state, "user", None)
+    if claims is not None:
+        subject = claims.get("sub") or claims.get("user_id")
+        if not subject:
+            raise HTTPException(status_code=401, detail="JWT subject required")
+        principal = f"jwt:{claims.get('iss', '')}:{subject}"
+    else:
+        principal = "shared-api-key"
+    namespace = hashlib.sha256(principal.encode("utf-8")).hexdigest()
+    return f"{namespace}:{session_id}"
+
+
 @app.middleware("http")
 async def add_request_id_and_count(request: Request, call_next):
     # Add a request id and increment metrics
@@ -335,7 +368,7 @@ async def add_request_id_and_count(request: Request, call_next):
             "status": getattr(response, 'status_code', None),
             "request_id": rid,
             "duration_ms": int((time.time() - start) * 1000),
-            "client": request.client.host if request.client else None,
+            "client": None,
         }
         # Append to rolling deque
         app.state.recent_requests.appendleft(entry)
@@ -359,22 +392,9 @@ async def query(request: Request, q: Query):
     request_id = getattr(request.state, "request_id", None)
 
     # Log received data
-    logger.info("Received query", prompt=q.prompt, request_id=request_id)
+    logger.info("received_query", prompt_length=len(q.prompt), request_id=request_id)
 
-    # Record the incoming prompt in recent requests for dashboarding
-    try:
-        prompt_snippet = (q.prompt[:400] + '...') if len(q.prompt) > 400 else q.prompt
-        app.state.recent_requests.appendleft({
-            "timestamp": time.time(),
-            "request_id": request_id,
-            "path": request.url.path,
-            "method": request.method,
-            "prompt": prompt_snippet,
-            "client": request.client.host if request.client else None,
-        })
-    except Exception:
-        # best-effort; don't fail the request if logging fails
-        pass
+    # Never keep unredacted financial questions in public request telemetry.
 
     async def event_stream() -> AsyncGenerator[bytes, None]:
         try:
@@ -388,11 +408,11 @@ async def query(request: Request, q: Query):
                 }
                 s = f"data: {json.dumps(payload)}\n\n"
                 # Log sent data
-                logger.debug("Sending token", token=chunk, request_id=request_id)
+                logger.debug("streamed_token", token_length=len(chunk), request_id=request_id)
                 yield s.encode("utf-8")
         except Exception as e:
             logger.exception("Error during LLM streaming", error=str(e))
-            err_payload = {"error": str(e), "request_id": request_id}
+            err_payload = {"error": "LLM request failed", "request_id": request_id}
             err = f"data: {json.dumps(err_payload)}\n\n"
             yield err.encode("utf-8")
 
@@ -405,7 +425,7 @@ async def query(request: Request, q: Query):
 
 class AgentQuery(BaseModel):
     """Request body for agent query with session support."""
-    query: str
+    query: str = Field(min_length=1, max_length=10000)
     session_id: Optional[str] = None  # Auto-generated if not provided
 
 
@@ -437,7 +457,7 @@ async def agent_query(request: Request, q: AgentQuery):
     
     logger.info(
         "Agent query received",
-        query=q.query[:200],
+        query_length=len(q.query),
         session_id=session_id,
         request_id=request_id,
     )
@@ -445,23 +465,24 @@ async def agent_query(request: Request, q: AgentQuery):
     # Get session store and orchestrator
     session_store = request.app.state.session_store
     orchestrator = request.app.state.orchestrator
+    storage_key = _session_storage_key(request, session_id)
     locks = request.app.state.session_locks
-    lock = locks.get(session_id)
+    lock = locks.get(storage_key)
     if lock is None:
         lock = asyncio.Lock()
-        locks[session_id] = lock
+        locks[storage_key] = lock
     
     async def event_stream() -> AsyncGenerator[bytes, None]:
         try:
             async with lock:
-                history = session_store.get(session_id)
+                history = session_store.get(storage_key)
                 final_answer = await orchestrator.run(
                     query=q.query,
                     message_history=history,
                 )
                 # Only persist completed answers, never failed attempts.
                 await history.add_message(q.query, final_answer)
-                session_store.set(session_id, history)
+                session_store.set(storage_key, history)
             
             # Stream the final answer
             payload = {
@@ -478,7 +499,7 @@ async def agent_query(request: Request, q: AgentQuery):
             logger.exception("Error during agent query", error=str(e), session_id=session_id)
             err_payload = {
                 "type": "error",
-                "error": str(e),
+                "error": "Agent execution failed",
                 "session_id": session_id,
                 "request_id": request_id,
             }
@@ -516,7 +537,7 @@ async def get_history(request: Request, session_id: Optional[str] = None):
         raise HTTPException(status_code=400, detail="session_id required")
     
     session_store = request.app.state.session_store
-    history = session_store.get(session_id)
+    history = session_store.get(_session_storage_key(request, session_id))
     
     if not history.has_messages():
         return JSONResponse({
@@ -561,7 +582,7 @@ async def clear_history(request: Request, session_id: Optional[str] = None):
         raise HTTPException(status_code=400, detail="session_id required")
     
     session_store = request.app.state.session_store
-    session_store.delete(session_id)
+    session_store.delete(_session_storage_key(request, session_id))
     
     logger.info("Session history cleared", session_id=session_id)
     
