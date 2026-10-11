@@ -48,7 +48,8 @@ class InMemorySessionStore:
             if expires_at is not None and expires_at <= time.monotonic():
                 self._store.pop(session_id, None)
                 self._expires_at.pop(session_id, None)
-            return self._store.get(session_id) or (default if default is not None else MessageHistory())
+            stored = self._store.get(session_id)
+            return stored if stored is not None else (default if default is not None else MessageHistory())
     
     def set(self, session_id: str, history: MessageHistory) -> None:
         """Store or update a session's message history.
