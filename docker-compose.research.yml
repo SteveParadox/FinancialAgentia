@@ -1,0 +1,43 @@
+# Configure .env locally; never commit financial provider or LLM secrets.
+services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - research-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  api:
+    build:
+      context: ./python-backend
+    env_file:
+      - path: ./python-backend/.env
+        required: true
+    environment:
+      BACKEND_ENV: production
+      SECURE_COOKIES: "true"
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+  worker:
+    build:
+      context: ./python-backend
+    command: ["python", "-m", "app.execution_worker"]
+    env_file:
+      - path: ./python-backend/.env
+        required: true
+    environment:
+      BACKEND_ENV: production
+      SECURE_COOKIES: "true"
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+volumes:
+  research-redis:

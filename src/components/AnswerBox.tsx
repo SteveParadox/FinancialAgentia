@@ -27,25 +27,36 @@ export const AnswerBox = React.memo(function AnswerBox({ stream, text, onStart, 
 
   useEffect(() => {
     if (!stream) return;
-
+    let cancelled = false;
     let collected = text || '';
     let started = false;
-    
     (async () => {
+      let completed = false;
       try {
         for await (const chunk of stream) {
+          if (cancelled) break;
           if (!started && chunk.token.trim()) {
             started = true;
             onStartRef.current?.();
           }
           collected += chunk.token;
-          setContent(collected);
+          if (!cancelled) setContent(collected);
         }
+        completed = true;
+      } catch {
+        // Do not persist incomplete responses as completed research.
       } finally {
-        setIsStreaming(false);
-        onCompleteRef.current?.(collected);
+        if (!cancelled) {
+          setIsStreaming(false);
+          if (completed) onCompleteRef.current?.(collected);
+        }
       }
     })();
+    return () => {
+      cancelled = true;
+      const finishing = stream.return?.(undefined);
+      if (finishing) void finishing.catch(() => undefined);
+    };
   }, [stream, text]);
 
   return (

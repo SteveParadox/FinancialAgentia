@@ -127,6 +127,8 @@ export function CLI() {
 
   // Store the current turn's tasks when answer starts streaming
   const currentTasksRef = useRef<Task[]>([]);
+  // Ignore completions from requests cancelled before a new request begins.
+  const activeRunRef = useRef(0);
 
   const messageHistoryRef = useRef<MessageHistory>(new MessageHistory(model));
 
@@ -167,6 +169,7 @@ export function CLI() {
     }
     baseHandleAnswerComplete(answer);
     currentTasksRef.current = [];
+    setState('idle');
   }, [currentTurn, baseHandleAnswerComplete]);
 
   /**
@@ -174,16 +177,17 @@ export function CLI() {
    */
   const executeQuery = useCallback(
     async (query: string) => {
+      const run = ++activeRunRef.current;
       setState('running');
       try {
         await processQuery(query);
       } catch (e) {
+        if (run !== activeRunRef.current) return;
         if ((e as Error).message?.includes('interrupted')) {
           setStatusMessage('Operation cancelled.');
         } else {
           setStatusMessage(`Error: ${e}`);
         }
-      } finally {
         setState('idle');
       }
     },
@@ -211,7 +215,7 @@ export function CLI() {
       }
 
       if (query === '/model') {
-        setState('model_select');
+        setStatusMessage('The authoritative agent model is configured on the Python backend using LLM_MODEL.');
         return;
       }
 
@@ -297,10 +301,11 @@ export function CLI() {
   useInput((input, key) => {
     if (key.ctrl && input === 'c') {
       if (state === 'running') {
+        activeRunRef.current += 1;
         setState('idle');
         cancelExecution();
         clearQueue();
-        setStatusMessage('Operation cancelled. You can ask a new question or press Ctrl+C again to quit.');
+        setStatusMessage('Cancellation requested from server. You can ask a new question.');
       } else if (state === 'api_key_confirm' || state === 'api_key_input') {
         setPendingProvider(null);
         setState('idle');

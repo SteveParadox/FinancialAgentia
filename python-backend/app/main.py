@@ -35,6 +35,8 @@ from dexter_py.model.llm import call_llm_stream
 from dexter_py.utils.session_store import get_session_store
 from dexter_py.agent.orchestrator import Orchestrator
 from dexter_py.agent.tool_executor import ToolExecutor
+from dexter_py.tools.financial_datasets import register_financial_tools
+from dexter_py.agent.execution_registry import ExecutionRegistry
 from dexter_py.utils._utils import LLMConfig, configure_llm, close_llm_clients
 
 
@@ -61,12 +63,22 @@ async def lifespan(application: FastAPI):
     application.state.recent_requests = deque(maxlen=1000)
     application.state.session_locks = WeakValueDictionary()
     application.state.session_store = get_session_store()
+    application.state.execution_registry = None
+    if os.getenv("REDIS_URL"):
+        shared = ExecutionRegistry.from_env()
+        if not await shared.health():
+            raise RuntimeError("Durable execution Redis is unavailable")
+        application.state.execution_registry = shared
+    elif os.getenv("BACKEND_ENV", "development").lower() == "production":
+        raise RuntimeError("Production financial research requires REDIS_URL")
     model = os.getenv("LLM_MODEL", "gpt-4o-mini")
     iterations = int(os.getenv("AGENT_MAX_ITERATIONS", "3"))
     configure_llm(LLMConfig(default_model=model))
     # Real tools are registered explicitly; the Python scaffold has no
     # production financial feed. Never register demonstration prices here.
     tools = ToolExecutor()
+    financial_provider = register_financial_tools(tools)
+    application.state.financial_provider = financial_provider
     application.state.orchestrator = Orchestrator(
         model=model, max_iterations=iterations, tool_executor=tools,
     )
@@ -74,7 +86,10 @@ async def lifespan(application: FastAPI):
     try:
         yield
     finally:
-        for dependency in (application.state.session_store, tools):
+        for dependency in (application.state.session_store, tools, financial_provider,
+                           application.state.execution_registry):
+            if dependency is None:
+                continue
             closer = getattr(dependency, "close", None)
             if callable(closer):
                 outcome = closer()
@@ -150,14 +165,25 @@ async def ready():
     )
     tools_registered = (len(state.orchestrator.execute_phase.tool_executor.tools)
                         if initialized and hasattr(state.orchestrator.execute_phase.tool_executor, "tools") else 0)
-    # A configured LLM alone is not proof of financial research readiness.
-    ready = bool(initialized and provider_configured and tools_registered)
+    shared = getattr(state, "execution_registry", None)
+    shared_ready = bool(shared is not None and await shared.health())
+    ready = bool(initialized and provider_configured and tools_registered and shared_ready)
     return JSONResponse(
         {"ready": ready, "agent_initialized": bool(initialized),
          "model_provider_configured": bool(provider_configured),
-         "financial_tools_registered": bool(tools_registered)},
+         "financial_tools_registered": bool(tools_registered),
+         "durable_execution_registry_ready": shared_ready},
         status_code=200 if ready else 503,
     )
+
+
+@app.get("/api/v1/tools")
+async def registered_tools(request: Request):
+    await require_auth(request)
+    executor = request.app.state.orchestrator.execute_phase.tool_executor
+    signatures = getattr(executor, "tool_signatures", {})
+    return {"tools": [{"name": name, "signature": signature}
+                      for name, signature in sorted(signatures.items())]}
 
 
 @app.get("/metrics")
@@ -462,6 +488,7 @@ class AgentQuery(BaseModel):
     session_id: Optional[str] = None  # Auto-generated if not provided
 
 
+@app.post("/api/v1/agents/execute")
 @app.post("/agent/query")
 @limiter.limit("10/minute")
 async def agent_query(request: Request, q: AgentQuery):
@@ -478,6 +505,12 @@ async def agent_query(request: Request, q: AgentQuery):
         SSE stream with agent response chunks
     """
     await require_auth(request)
+    if getattr(request.app.state, "execution_registry", None) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Use /api/v1/agents/executions for durable financial research")
+    if os.getenv("BACKEND_ENV", "development").lower() == "production":
+        raise HTTPException(status_code=503, detail="Durable financial research unavailable")
     
     request_id = getattr(request.state, "request_id", None)
     
@@ -567,6 +600,22 @@ async def get_history(request: Request, session_id: Optional[str] = None):
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id required")
     
+    if getattr(request.app.state, "execution_registry", None) is not None:
+        from app.execution_api import registry_and_principal
+        registry, principal = await registry_and_principal(request)
+        try:
+            turns = await registry.history(principal, session_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid session ID")
+        return JSONResponse({
+            "session_id": session_id,
+            "turns": len(turns),
+            "messages": [{
+                "id": item["execution_id"],
+                "query": item["query"],
+                "answer": item["answer"][:500],
+            } for item in turns],
+        })
     session_store = request.app.state.session_store
     storage_key = _session_storage_key(request, session_id)
     async with _session_lock(request, storage_key):
@@ -610,6 +659,9 @@ async def clear_history(request: Request, session_id: Optional[str] = None):
         JSON confirming deletion
     """
     await require_auth(request)
+    if getattr(request.app.state, "execution_registry", None) is not None:
+        raise HTTPException(status_code=409,
+            detail="Durable history cannot be cleared while executions might be queued")
     
     # Determine session ID
     session_id = session_id or request.cookies.get("session_id")
@@ -656,3 +708,8 @@ async def create_session(request: Request):
         samesite="lax",
     )
     return response
+
+
+# Mount after require_auth is defined; single durable API, shared execution registry.
+from app.execution_api import router as execution_router
+app.include_router(execution_router)
