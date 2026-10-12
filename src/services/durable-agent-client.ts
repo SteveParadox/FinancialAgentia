@@ -93,11 +93,20 @@ export async function executeDurableAgentQuery(
   const acceptedSession = admitted.session_id;
   onAdmitted(executionId);
   const pollUrl = endpoint('/api/v1/agents/executions/' + executionId);
+  let failures = 0;
   for (;;) {
     if (joined.aborted) throw new Error('Financial research interrupted');
-    const state = await jsonResponse(await fetch(pollUrl, {
-      method: 'GET', headers: headers(), signal: joined,
-    }));
+    let state: Record<string, unknown>;
+    try {
+      state = await jsonResponse(await fetch(pollUrl, {
+        method: 'GET', headers: headers(), signal: joined,
+      }));
+      failures = 0;
+    } catch (error) {
+      if (joined.aborted || ++failures >= 4) throw error;
+      await new Promise<void>(resolve => setTimeout(resolve, 500 * failures));
+      continue;
+    }
     if (typeof state.state !== 'string' || typeof state.session_id !== 'string' ||
         state.session_id !== acceptedSession) {
       throw new Error('Invalid financial execution status');

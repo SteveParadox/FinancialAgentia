@@ -48,6 +48,9 @@ class Admission(BaseModel):
 @router.post("", status_code=202)
 async def admit(request: Request, body: Admission):
     registry, principal = await registry_and_principal(request)
+    tools = request.app.state.orchestrator.execute_phase.tool_executor
+    if not getattr(tools, "tools", {}):
+        raise HTTPException(status_code=503, detail="Financial research tools are not configured")
     token = request.headers.get("Idempotency-Key")
     if not token:
         raise HTTPException(status_code=400, detail="Idempotency-Key required")

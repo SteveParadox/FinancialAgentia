@@ -76,7 +76,9 @@ class ExecutionWorker:
                 return
             raw_results.append(result)
 
-        timeout = max(0.001, float(record["deadline_at"]) - time.time())
+        redis_time = await self.registry.redis.time()
+        authoritative_now = float(redis_time[0]) + float(redis_time[1]) / 1_000_000
+        timeout = max(0.001, float(record["deadline_at"]) - authoritative_now)
         # The per-execution context and result collector are never shared.
         async with asyncio.timeout(timeout):
             async def report_phase(phase: str):
