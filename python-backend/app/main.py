@@ -600,6 +600,22 @@ async def get_history(request: Request, session_id: Optional[str] = None):
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id required")
     
+    if getattr(request.app.state, "execution_registry", None) is not None:
+        from app.execution_api import registry_and_principal
+        registry, principal = await registry_and_principal(request)
+        try:
+            turns = await registry.history(principal, session_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid session ID")
+        return JSONResponse({
+            "session_id": session_id,
+            "turns": len(turns),
+            "messages": [{
+                "id": item["execution_id"],
+                "query": item["query"],
+                "answer": item["answer"][:500],
+            } for item in turns],
+        })
     session_store = request.app.state.session_store
     storage_key = _session_storage_key(request, session_id)
     async with _session_lock(request, storage_key):
@@ -643,6 +659,9 @@ async def clear_history(request: Request, session_id: Optional[str] = None):
         JSON confirming deletion
     """
     await require_auth(request)
+    if getattr(request.app.state, "execution_registry", None) is not None:
+        raise HTTPException(status_code=409,
+            detail="Durable history cannot be cleared while executions might be queued")
     
     # Determine session ID
     session_id = session_id or request.cookies.get("session_id")
