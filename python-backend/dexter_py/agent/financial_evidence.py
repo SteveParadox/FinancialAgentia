@@ -153,8 +153,9 @@ def normalize_tool_evidence(task_results: list[dict]) -> tuple[list[FinancialSou
                 except ValueError:
                     continue
                 currency = row.get("currency") if isinstance(row.get("currency"), str) else None
+                observation_time = row.get("time") or row.get("date") or result.get("data_timestamp")
                 for metric, value in row.items():
-                    if metric == "price" and not result.get("data_timestamp"):
+                    if metric == "price" and not observation_time:
                         # Never certify an un-timestamped quote as a market price.
                         continue
                     if metric not in FINANCIAL_VALUES:
@@ -170,7 +171,7 @@ def normalize_tool_evidence(task_results: list[dict]) -> tuple[list[FinancialSou
                         evidence_id=entry_id, source_id=src_id, symbol=ticker,
                         metric=metric, value=amount, currency=currency,
                         unit=currency if metric != "volume" else "shares",
-                        period_end=period, data_as_of=result.get("data_timestamp"),
+                        period_end=period, data_as_of=str(observation_time) if observation_time else None,
                         evidence_type="PROVIDER_REPORTED",
                     ))
                     if len(evidence) >= 200:
@@ -203,6 +204,10 @@ def validate_claims(proposed: ProposedClaims, evidence: list[FinancialEvidence])
         if not matching:
             rejected.append("Financial metric or numeric value mismatch")
             continue
+        if candidate.metric == "price" and (
+                not matching[0].data_as_of or not matching[0].currency):
+            rejected.append("Price claim lacks source timestamp or currency; display as partial evidence instead")
+            continue
         # Avoid asserting incompatible source contexts as a single fact.
         if any(ref.symbol != matching[0].symbol for ref in refs):
             rejected.append("Mixed company evidence")
@@ -214,7 +219,7 @@ def validate_claims(proposed: ProposedClaims, evidence: list[FinancialEvidence])
             rejected.append("Fiscal reporting period mismatch")
             continue
         # A validated figure for one symbol cannot be attributed to another.
-        if not re.search(r"(?<!\\w)" + re.escape(matching[0].symbol) + r"(?!\\w)",
+        if not re.search(r"(?<!\w)" + re.escape(matching[0].symbol) + r"(?!\w)",
                          candidate.statement, flags=re.IGNORECASE):
             rejected.append("Claim does not identify the cited company")
             continue
