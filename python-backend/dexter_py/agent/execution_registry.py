@@ -55,7 +55,7 @@ return {'NEW',ARGV[1]}
 """
 
 CLAIM = _now() + _emit() + """
-local ids=redis.call('ZRANGE', KEYS[1], 0, 63)
+local ids=redis.call('ZRANGE', KEYS[1], 0, 255)
 for _,id in ipairs(ids) do
   local k=KEYS[2] .. id
   local state=redis.call('HGET',k,'state')
@@ -65,20 +65,28 @@ for _,id in ipairs(ids) do
     redis.call('HSET',k,'state','CANCELLED','updated_at',tostring(now),'completed_at',tostring(now))
     redis.call('ZREM',KEYS[1],id)
     emit(id,'CANCELLED')
+    redis.call('EXPIRE',k,86400)
+    redis.call('EXPIRE',KEYS[3] .. id,86400)
   elseif state~='QUEUED' and state~='RUNNING' then
     redis.call('ZREM',KEYS[1],id)
   elseif deadline<=now and (state=='QUEUED' or expires<=now) then
     redis.call('HSET',k,'state','TIMED_OUT','updated_at',tostring(now),'completed_at',tostring(now))
     redis.call('ZREM',KEYS[1],id)
     emit(id,'TIMED_OUT')
+    redis.call('EXPIRE',k,86400)
+    redis.call('EXPIRE',KEYS[3] .. id,86400)
   elseif state=='QUEUED' or (state=='RUNNING' and expires<=now) then
+    local session_lock=KEYS[4] .. redis.call('HGET',k,'principal') .. ':' .. redis.call('HGET',k,'session_id')
+    if redis.call('EXISTS',session_lock)==0 then
     local generation=redis.call('HINCRBY',k,'generation',1)
     redis.call('HINCRBY',k,'attempt_count',1)
     redis.call('HSET',k,'state','RUNNING','owner',ARGV[1],
                'lease_expires_at',tostring(now+tonumber(ARGV[2])),
                'updated_at',tostring(now),'started_at',tostring(now))
+    redis.call('SET',session_lock,id .. ':' .. tostring(generation),'EX',tonumber(ARGV[2]))
     emit(id,'RUNNING')
     return {id,tostring(generation)}
+    end
   end
 end
 return {}
@@ -94,6 +102,9 @@ end
 local state=redis.call('HGET',k,'state')
 if state=='CANCEL_REQUESTED' then return 'CANCEL' end
 if state~='RUNNING' then return 'LOST' end
+local session_lock=KEYS[2] .. redis.call('HGET',k,'principal') .. ':' .. redis.call('HGET',k,'session_id')
+if redis.call('GET',session_lock)~=ARGV[4] then return 'LOST' end
+redis.call('EXPIRE',session_lock,tonumber(ARGV[3]))
 redis.call('HSET',k,'lease_expires_at',tostring(now+tonumber(ARGV[3])),
                  'updated_at',tostring(now))
 return 'OK'
@@ -108,6 +119,8 @@ if state=='QUEUED' then
     'completed_at',tostring(now),'updated_at',tostring(now))
   redis.call('ZREM',KEYS[4],ARGV[2])
   emit(ARGV[2],'CANCELLED')
+  redis.call('EXPIRE',k,86400)
+  redis.call('EXPIRE',KEYS[3] .. ARGV[2],86400)
   return 'CANCELLED'
 end
 if state=='RUNNING' then
@@ -144,8 +157,14 @@ if outcome=='SUCCEEDED' then
   redis.call('LTRIM',KEYS[5],-20,-1)
   redis.call('EXPIRE',KEYS[5],tonumber(ARGV[8]))
 end
+local session_lock=KEYS[6] .. redis.call('HGET',k,'principal') .. ':' .. redis.call('HGET',k,'session_id')
+if redis.call('GET',session_lock)==ARGV[1] .. ':' .. ARGV[3] then
+  redis.call('DEL',session_lock)
+end
 redis.call('ZREM',KEYS[4],ARGV[1])
 emit(ARGV[1],outcome)
+redis.call('EXPIRE',k,tonumber(ARGV[8]))
+redis.call('EXPIRE',KEYS[3] .. ARGV[1],tonumber(ARGV[8]))
 return outcome
 """
 
@@ -166,6 +185,7 @@ class ExecutionRegistry:
         self.execution_prefix = prefix + "exec:"
         self.events_prefix = prefix + "events:"
         self.queue = prefix + "queue:active"
+        self.session_owner_prefix = prefix + "session_owner:"
 
     @classmethod
     def from_env(cls) -> "ExecutionRegistry":
@@ -225,15 +245,17 @@ class ExecutionRegistry:
         return safe
 
     async def claim(self, worker_id: str, lease_seconds: int = 20) -> tuple[str, int] | None:
-        reply = await self.redis.eval(CLAIM, 3, self.queue,
+        reply = await self.redis.eval(CLAIM, 4, self.queue,
                                       self.execution_prefix, self.events_prefix,
+                                      self.session_owner_prefix,
                                       worker_id, lease_seconds)
         return (reply[0], int(reply[1])) if reply else None
 
     async def heartbeat(self, execution_id: str, worker_id: str,
                         generation: int, lease_seconds: int = 20) -> str:
-        return await self.redis.eval(HEARTBEAT, 1, self._key(execution_id),
-                                     worker_id, generation, lease_seconds)
+        return await self.redis.eval(HEARTBEAT, 2, self._key(execution_id),
+                                     self.session_owner_prefix, worker_id, generation,
+                                     lease_seconds, execution_id + ":" + str(generation))
 
     async def cancel(self, execution_id: str, principal: str) -> str:
         return await self.redis.eval(CANCEL, 4, self._key(execution_id),
@@ -252,9 +274,10 @@ class ExecutionRegistry:
                            "query": record["query"],
                            "answer": (result or {}).get("answer", "")},
                           separators=(",", ":"))
-        return await self.redis.eval(FINISH, 5, self._key(execution_id),
+        return await self.redis.eval(FINISH, 6, self._key(execution_id),
                                      self.execution_prefix, self.events_prefix,
-                                     self.queue, key, execution_id, worker_id,
+                                     self.queue, key, self.session_owner_prefix,
+                                     execution_id, worker_id,
                                      generation, outcome, payload, failure_code,
                                      turn, 86400)
 

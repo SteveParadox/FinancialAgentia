@@ -124,6 +124,9 @@ def normalize_tool_evidence(task_results: list[dict]) -> tuple[list[FinancialSou
             parsed = urlparse(url) if isinstance(url, str) else None
             if not parsed or parsed.scheme != "https" or parsed.hostname != "api.financialdatasets.ai":
                 continue
+            if call.get("tool") == "calculate_financial_ratios":
+                # Derived metrics need explicit source-input lineage.
+                continue
             ticker = result.get("ticker")
             if not isinstance(ticker, str) or not re.fullmatch(r"[A-Z0-9.^_-]{1,20}", ticker):
                 continue
@@ -151,6 +154,9 @@ def normalize_tool_evidence(task_results: list[dict]) -> tuple[list[FinancialSou
                     continue
                 currency = row.get("currency") if isinstance(row.get("currency"), str) else None
                 for metric, value in row.items():
+                    if metric == "price" and not result.get("data_timestamp"):
+                        # Never certify an un-timestamped quote as a market price.
+                        continue
                     if metric not in FINANCIAL_VALUES:
                         continue
                     try:
