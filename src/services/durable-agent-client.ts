@@ -62,6 +62,7 @@ export async function executeDurableAgentQuery(
   query: string, sessionId: string | null, signal: AbortSignal,
   onAdmitted: (executionId: string) => void,
   onIdempotencyKey?: (token: string) => void,
+  onStatus?: (state: string, phase: string | null) => void,
 ): Promise<ResearchAnswer> {
   if (!query.trim() || query.length > 10000) throw new Error('Invalid research query');
   if (sessionId !== null && !UUID.test(sessionId)) throw new Error('Invalid session ID');
@@ -101,6 +102,7 @@ export async function executeDurableAgentQuery(
         state.session_id !== acceptedSession) {
       throw new Error('Invalid financial execution status');
     }
+    onStatus?.(state.state, typeof state.current_phase === 'string' ? state.current_phase : null);
     if (TERMINAL.has(state.state)) {
       if (state.state !== 'SUCCEEDED') {
         throw new Error('Research execution ' + state.state.toLowerCase());

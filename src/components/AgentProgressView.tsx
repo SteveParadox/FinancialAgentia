@@ -104,7 +104,12 @@ export const AgentProgressView = React.memo(function AgentProgressView({
     return (
       <Box marginTop={1}>
         <Text color={colors.accent}><InkSpinner type="dots" /></Text>
-        <Text> Researching through Python backend...</Text>
+        <Text> {state.currentPhase === 'understand' ? 'Understanding research question' :
+                  state.currentPhase === 'plan' ? 'Planning research tasks' :
+                  state.currentPhase === 'execute' ? 'Retrieving financial sources' :
+                  state.currentPhase === 'reflect' ? 'Reviewing financial evidence' :
+                  state.currentPhase === 'answer' ? 'Preparing source-backed report' :
+                  'Research in progress'}...</Text>
       </Box>
     );
   }

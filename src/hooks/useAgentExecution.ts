@@ -73,6 +73,24 @@ export function useAgentExecution(_options: { model: string; messageHistory: Mes
             void cancelPendingResearch(token).catch(() => undefined);
           }
         },
+        (_state: string, phase: string | null) => {
+          if (generation !== requestGenerationRef.current || controller.signal.aborted || !phase) return;
+          const order = ['understand', 'plan', 'execute', 'reflect', 'answer', 'validate'];
+          const position = order.indexOf(phase);
+          if (position < 0) return;
+          const shown = phase === 'validate' ? 'reflect' : phase;
+          setCurrentTurn(prev => prev ? {
+            ...prev,
+            state: {
+              ...prev.state,
+              currentPhase: shown as AgentProgressState['currentPhase'],
+              understandComplete: position > 0,
+              planComplete: position > 1,
+              reflectComplete: position > 3,
+              researchingBackend: true,
+            },
+          } : prev);
+        },
       );
       if (controller.signal.aborted || generation !== requestGenerationRef.current) {
         throw new Error('Agent execution interrupted');
