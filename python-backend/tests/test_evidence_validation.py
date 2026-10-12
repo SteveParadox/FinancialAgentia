@@ -16,7 +16,7 @@ def real_fixture():
                 "source_url": "https://api.financialdatasets.ai/prices/snapshot/?ticker=AAPL",
                 "retrieved_at": "2026-10-10T12:00:00+00:00",
                 "data_timestamp": "2026-10-10T11:59:00+00:00",
-                "data": {"price": 195.25, "ticker": "AAPL"},
+                "data": {"price": 195.25, "ticker": "AAPL", "currency": "USD"},
             }}
         ]
     }
@@ -96,3 +96,12 @@ def test_wrong_company_attribution_is_rejected():
                       supporting_evidence_ids=[records[0].evidence_id])
     ])
     assert not validate_claims(proposed, records)[0]
+
+def test_price_without_currency_must_remain_partial():
+    _, evidence = normalize_tool_evidence(real_fixture())
+    unpriced = evidence[0].model_copy(update={"currency": None})
+    proposed = ProposedClaims(claims=[
+        ProposedClaim(statement="AAPL price is 195.25", metric="price", value="195.25",
+                      supporting_evidence_ids=[unpriced.evidence_id])
+    ])
+    assert not validate_claims(proposed, [unpriced])[0]
