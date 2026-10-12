@@ -213,6 +213,11 @@ def validate_claims(proposed: ProposedClaims, evidence: list[FinancialEvidence])
         if any(ref.period_end and matching[0].period_end and ref.period_end != matching[0].period_end for ref in refs):
             rejected.append("Fiscal reporting period mismatch")
             continue
+        # A validated figure for one symbol cannot be attributed to another.
+        if not re.search(r"(?<!\\w)" + re.escape(matching[0].symbol) + r"(?!\\w)",
+                         candidate.statement, flags=re.IGNORECASE):
+            rejected.append("Claim does not identify the cited company")
+            continue
         # Do not accept extra numeric assertions embedded in prose.
         nums = re.findall(r"(?<![\w.])[-+]?\d+(?:,\d{3})*(?:\.\d+)?%?", candidate.statement)
         if len(nums) != 1:

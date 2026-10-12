@@ -88,3 +88,11 @@ def test_inconsistent_periods_fail_claim_validation():
                       supporting_evidence_ids=["ev_a", "ev_b"])
     ])
     assert not validate_claims(proposed, [ref1, ref2])[0]
+
+def test_wrong_company_attribution_is_rejected():
+    _, records = normalize_tool_evidence(real_fixture())
+    proposed = ProposedClaims(claims=[
+        ProposedClaim(statement="MSFT price is 195.25", metric="price", value="195.25",
+                      supporting_evidence_ids=[records[0].evidence_id])
+    ])
+    assert not validate_claims(proposed, records)[0]

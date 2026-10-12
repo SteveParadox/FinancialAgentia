@@ -58,13 +58,28 @@ class ExecutionWorker:
             raise RuntimeError("Worker ownership lost before research")
         history = ReadOnlyHistory(await self.registry.history(record["principal"], record["session_id"]))
         raw_results: list[dict] = []
+        oversized_evidence_count = 0
+
+        def collect(result: dict):
+            nonlocal oversized_evidence_count
+            if len(raw_results) >= 50:
+                oversized_evidence_count += 1
+                return
+            encoded = json.dumps(result, default=str)
+            if len(encoded) > 300_000:
+                oversized_evidence_count += 1
+                return
+            raw_results.append(result)
+
         timeout = max(0.001, float(record["deadline_at"]) - time.time())
         # The per-execution context and result collector are never shared.
         async with asyncio.timeout(timeout):
             answer = await self.orchestrator.run(
-                record["query"], history, evidence_collector=raw_results.append)
+                record["query"], history, evidence_collector=collect)
             sources, evidence = normalize_tool_evidence(raw_results)
             limitations: list[str] = []
+            if oversized_evidence_count:
+                limitations.append('Some oversized research evidence was excluded.')
             proposed = ProposedClaims(claims=[])
             if evidence:
                 try:
