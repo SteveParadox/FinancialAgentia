@@ -36,6 +36,7 @@ end
 ADMIT = _now() + _emit() + """
 local old=redis.call('GET',KEYS[1])
 if old then
+  if old=='CANCELLED' then return {'CANCELLED',''} end
   if redis.call('HGET',KEYS[2] .. old,'fingerprint')~=ARGV[4] then
     return {'CONFLICT',old}
   end
@@ -169,6 +170,35 @@ return outcome
 """
 
 
+CANCEL_BY_KEY = _now() + _emit() + """
+local existing=redis.call('GET',KEYS[1])
+if not existing then
+  redis.call('SET',KEYS[1],'CANCELLED','EX',86400,'NX')
+  return 'CANCEL_PENDING'
+end
+if existing=='CANCELLED' then return 'CANCEL_PENDING' end
+local k=KEYS[2] .. existing
+if redis.call('HGET',k,'principal')~=ARGV[1] then return 'NOT_FOUND' end
+local state=redis.call('HGET',k,'state')
+if state=='QUEUED' then
+  redis.call('HSET',k,'state','CANCELLED','cancel_requested_at',tostring(now),
+    'updated_at',tostring(now),'completed_at',tostring(now))
+  redis.call('ZREM',KEYS[4],existing)
+  emit(existing,'CANCELLED')
+  redis.call('EXPIRE',k,86400)
+  redis.call('EXPIRE',KEYS[3] .. existing,86400)
+  return 'CANCELLED'
+end
+if state=='RUNNING' then
+  redis.call('HSET',k,'state','CANCEL_REQUESTED','cancel_requested_at',tostring(now),
+    'updated_at',tostring(now))
+  emit(existing,'CANCEL_REQUESTED')
+  return 'CANCEL_REQUESTED'
+end
+return state or 'NOT_FOUND'
+"""
+
+
 TERMINAL = frozenset({"SUCCEEDED", "CANCELLED", "FAILED", "TIMED_OUT"})
 
 
@@ -230,9 +260,19 @@ class ExecutionRegistry:
                                       self.execution_prefix, self.events_prefix,
                                       self.queue, execution_id, principal, session_id,
                                       fingerprint, query, deadline_seconds, model, 86400)
+        if reply[0] == "CANCELLED":
+            raise ExecutionConflict("Execution was cancelled before admission")
         if reply[0] == "CONFLICT":
             raise ExecutionConflict("Idempotency key already used for a different request")
         return reply[1], reply[0] == "NEW"
+
+    async def cancel_by_key(self, principal: str, idempotency_key: str) -> str:
+        if not 8 <= len(idempotency_key) <= 128:
+            raise ValueError("Invalid idempotency key")
+        key = self.prefix + "idem:" + _sha(principal + ":" + idempotency_key)
+        return await self.redis.eval(
+            CANCEL_BY_KEY, 4, key, self.execution_prefix,
+            self.events_prefix, self.queue, principal)
 
     async def get(self, execution_id: str, principal: str) -> dict[str, Any] | None:
         result = await self.redis.hgetall(self._key(execution_id))
