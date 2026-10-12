@@ -305,7 +305,7 @@ export function CLI() {
         setState('idle');
         cancelExecution();
         clearQueue();
-        setStatusMessage('Operation cancelled. You can ask a new question or press Ctrl+C again to quit.');
+        setStatusMessage('Cancellation requested from server. You can ask a new question.');
       } else if (state === 'api_key_confirm' || state === 'api_key_input') {
         setPendingProvider(null);
         setState('idle');
