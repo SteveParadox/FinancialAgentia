@@ -170,6 +170,21 @@ return outcome
 """
 
 
+PROGRESS = _now() + """
+local k=KEYS[1]
+if redis.call('HGET',k,'owner')~=ARGV[1]
+   or redis.call('HGET',k,'generation')~=ARGV[2]
+   or redis.call('HGET',k,'state')~='RUNNING'
+   or tonumber(redis.call('HGET',k,'lease_expires_at') or '0')<=now then
+  return 'LOST'
+end
+redis.call('HSET',k,'current_phase',ARGV[3],'updated_at',tostring(now))
+redis.call('XADD',KEYS[2],'MAXLEN','~',200,'*',
+  'state','RUNNING','type','phase.started','phase',ARGV[3])
+return 'OK'
+"""
+
+
 CANCEL_BY_KEY = _now() + _emit() + """
 local existing=redis.call('GET',KEYS[1])
 if not existing then
@@ -320,6 +335,14 @@ class ExecutionRegistry:
                                      execution_id, worker_id,
                                      generation, outcome, payload, failure_code,
                                      turn, 86400)
+
+    async def publish_phase(self, execution_id: str, worker_id: str,
+                            generation: int, phase: str) -> str:
+        if phase not in {"understand", "plan", "execute", "reflect", "answer", "validate"}:
+            raise ValueError("Unknown research phase")
+        return await self.redis.eval(
+            PROGRESS, 2, self._key(execution_id), self.events_key(execution_id),
+            worker_id, generation, phase)
 
     async def history(self, principal: str, session_id: str) -> list[dict]:
         items = await self.redis.lrange(self.history_key(principal, session_id), 0, -1)

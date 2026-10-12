@@ -129,8 +129,9 @@ async def events(execution_id: str, request: Request):
             payload = {
                 "protocol_version": 1,
                 "execution_id": execution_id, "event_id": event_id,
-                "type": "execution." + fields["state"].lower(),
+                "type": fields.get("type") or "execution." + fields["state"].lower(),
                 "state": fields["state"],
+                "phase": fields.get("phase"),
             }
             yield ("id: " + event_id + "\ndata: " + json.dumps(payload) + "\n\n").encode()
         # Retrieve terminal truth even if the Redis stream was trimmed.

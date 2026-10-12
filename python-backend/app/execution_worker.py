@@ -79,8 +79,16 @@ class ExecutionWorker:
         timeout = max(0.001, float(record["deadline_at"]) - time.time())
         # The per-execution context and result collector are never shared.
         async with asyncio.timeout(timeout):
+            async def report_phase(phase: str):
+                status = await self.registry.publish_phase(
+                    execution_id, self.worker_id, generation, phase)
+                if status != "OK":
+                    raise asyncio.CancelledError
+
             answer = await self.orchestrator.run(
-                record["query"], history, evidence_collector=collect)
+                record["query"], history,
+                evidence_collector=collect, progress_callback=report_phase)
+            await report_phase("validate")
             sources, evidence = normalize_tool_evidence(raw_results)
             limitations: list[str] = []
             if oversized_evidence_count:

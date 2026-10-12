@@ -85,7 +85,8 @@ class Orchestrator:
         self.execute_phase.configure_tools(tool_executor)
 
     async def run(self, query: str, message_history: Optional[Any] = None, *,
-                  evidence_collector: Optional[Any] = None) -> str:
+                  evidence_collector: Optional[Any] = None,
+                  progress_callback: Optional[Any] = None) -> str:
         """Run without mutating shared history; API/service owns persistence."""
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query must be non-empty")
@@ -105,12 +106,18 @@ class Orchestrator:
         try:
             if self.execute_phase.tool_executor is None:
                 raise RuntimeError("Tool executor not configured")
+            if progress_callback:
+                await progress_callback("understand")
             context.understanding = await asyncio.wait_for(self._understand(context), timeout=self.phase_timeouts["understand"])
             for iteration in range(1, self.max_iterations + 1):
                 context.iteration = iteration
+                if progress_callback:
+                    await progress_callback("plan")
                 context.current_plan = await asyncio.wait_for(self._plan(context), timeout=self.phase_timeouts["plan"])
                 # Reject malformed plans before any execution, not after partial success.
                 context.current_plan.get_execution_order()
+                if progress_callback:
+                    await progress_callback("execute")
                 await asyncio.wait_for(self._execute(context), timeout=self.phase_timeouts["execute"])
                 context.completed_plans.append(context.current_plan)
                 if evidence_collector is not None:
@@ -119,6 +126,8 @@ class Orchestrator:
                     for task in context.current_plan.tasks:
                         if task.status == "completed" and isinstance(task.result, dict):
                             evidence_collector(task.result)
+                if progress_callback:
+                    await progress_callback("reflect")
                 context.reflection = await asyncio.wait_for(self._reflect(context), timeout=self.phase_timeouts["reflect"])
                 incomplete_work = any(
                     task.status != "completed" for task in context.current_plan.tasks
@@ -141,6 +150,8 @@ class Orchestrator:
                         for plan in context.completed_plans for task in plan.tasks)):
                 raise OrchestratorError("All requested financial research tool tasks failed or were skipped")
 
+            if progress_callback:
+                await progress_callback("answer")
             return await asyncio.wait_for(self._answer(context), timeout=self.phase_timeouts["answer"])
         except Exception:
             context.stop_reason = StopReason.ERROR
