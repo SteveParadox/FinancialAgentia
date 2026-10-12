@@ -40,6 +40,15 @@ async function jsonResponse(response: Response): Promise<Record<string, unknown>
   return decoded as Record<string, unknown>;
 }
 
+export async function cancelPendingResearch(idempotencyKey: string): Promise<void> {
+  const response = await fetch(endpoint('/api/v1/agents/executions/cancel-by-key'), {
+    method: 'POST',
+    headers: { ...headers(), 'Idempotency-Key': idempotencyKey },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error('Research cancellation HTTP ' + response.status);
+}
+
 export async function cancelResearchExecution(executionId: string): Promise<void> {
   if (!UUID.test(executionId)) throw new Error('Invalid execution ID');
   const response = await fetch(endpoint('/api/v1/agents/executions/' + executionId + '/cancel'), {
@@ -52,10 +61,12 @@ export async function cancelResearchExecution(executionId: string): Promise<void
 export async function executeDurableAgentQuery(
   query: string, sessionId: string | null, signal: AbortSignal,
   onAdmitted: (executionId: string) => void,
+  onIdempotencyKey?: (token: string) => void,
 ): Promise<ResearchAnswer> {
   if (!query.trim() || query.length > 10000) throw new Error('Invalid research query');
   if (sessionId !== null && !UUID.test(sessionId)) throw new Error('Invalid session ID');
   const idem = crypto.randomUUID();
+  onIdempotencyKey?.(idem);
   const joined = AbortSignal.any([signal, AbortSignal.timeout(360_000)]);
   const body = JSON.stringify({ query, ...(sessionId ? { session_id: sessionId } : {}) });
   let admitted: Record<string, unknown> | undefined;

@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { executeDurableAgentQuery, cancelResearchExecution } from '../services/durable-agent-client.js';
+import { executeDurableAgentQuery, cancelResearchExecution, cancelPendingResearch } from '../services/durable-agent-client.js';
 import { generateId } from '../cli/types.js';
 import type { MessageHistory } from '../utils/message-history.js';
 import type { AgentProgressState } from '../components/AgentProgressView.js';
@@ -30,6 +30,7 @@ export function useAgentExecution(_options: { model: string; messageHistory: Mes
   const controllerRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const executionIdRef = useRef<string | null>(null);
+  const idempotencyKeyRef = useRef<string | null>(null);
   const requestGenerationRef = useRef(0);
 
   const processQuery = useCallback(async (query: string): Promise<void> => {
@@ -40,6 +41,7 @@ export function useAgentExecution(_options: { model: string; messageHistory: Mes
     const controller = new AbortController();
     controllerRef.current = controller;
     executionIdRef.current = null;
+    idempotencyKeyRef.current = null;
     setAnswerStream(null);
     setCurrentTurn({
       id: generateId(),
@@ -64,12 +66,20 @@ export function useAgentExecution(_options: { model: string; messageHistory: Mes
             void cancelResearchExecution(executionId).catch(() => undefined);
           }
         },
+        (token: string) => {
+          if (generation === requestGenerationRef.current && !controller.signal.aborted) {
+            idempotencyKeyRef.current = token;
+          } else {
+            void cancelPendingResearch(token).catch(() => undefined);
+          }
+        },
       );
       if (controller.signal.aborted || generation !== requestGenerationRef.current) {
         throw new Error('Agent execution interrupted');
       }
       sessionIdRef.current = answer.session_id;
       executionIdRef.current = null;
+      idempotencyKeyRef.current = null;
       setCurrentTurn(prev => prev?.query === query ? {
         ...prev,
         state: { ...prev.state, researchingBackend: false, isAnswering: false },
@@ -98,9 +108,15 @@ export function useAgentExecution(_options: { model: string; messageHistory: Mes
   const cancelExecution = useCallback(() => {
     requestGenerationRef.current += 1;
     const executionId = executionIdRef.current;
+    const idempotencyKey = idempotencyKeyRef.current;
     executionIdRef.current = null;
+    idempotencyKeyRef.current = null;
     controllerRef.current?.abort();
-    if (executionId) void cancelResearchExecution(executionId).catch(() => undefined);
+    if (executionId) {
+      void cancelResearchExecution(executionId).catch(() => undefined);
+    } else if (idempotencyKey) {
+      void cancelPendingResearch(idempotencyKey).catch(() => undefined);
+    }
     controllerRef.current = null;
     isProcessingRef.current = false;
     setIsProcessing(false);

@@ -116,3 +116,17 @@ def test_final_commit_once_and_history_once(registry):
         assert len(history) == 1
         assert history[0]["answer"] == "Verified price"
     run(check())
+
+def test_cancel_before_admission_prevents_orphan_execution(registry):
+    async def check():
+        instance = await new_registry(registry)
+        try:
+            assert await instance.cancel_by_key("u", "pre-cancel-token-123") == "CANCEL_PENDING"
+            with pytest.raises(ExecutionConflict):
+                await instance.admit(
+                    principal="u", session_id=str(uuid.uuid4()), query="AAPL",
+                    idempotency_key="pre-cancel-token-123", model="test")
+            assert await instance.claim("worker") is None
+        finally:
+            await instance.close()
+    run(check())

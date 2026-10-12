@@ -69,6 +69,22 @@ async def admit(request: Request, body: Admission):
     }
 
 
+@router.post("/cancel-by-key")
+async def cancel_by_key(request: Request):
+    registry, principal = await registry_and_principal(request)
+    idem_key = request.headers.get("Idempotency-Key")
+    if not idem_key:
+        raise HTTPException(status_code=400, detail="Idempotency-Key required")
+    try:
+        state = await registry.cancel_by_key(principal, idem_key)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid Idempotency-Key")
+    if state == "NOT_FOUND":
+        raise HTTPException(status_code=404, detail="Execution not found")
+    return {"state": state, "cancel_accepted": state in {
+        "CANCEL_PENDING", "CANCEL_REQUESTED", "CANCELLED"}}
+
+
 @router.get("/{execution_id}")
 async def status(execution_id: str, request: Request):
     registry, principal = await registry_and_principal(request)
