@@ -46,8 +46,13 @@ class ExecutionWorker:
                      job: asyncio.Task):
         while not job.done():
             await asyncio.sleep(min(1.0, self.lease_seconds / 4))
-            status = await self.registry.heartbeat(
-                execution_id, self.worker_id, generation, self.lease_seconds)
+            try:
+                status = await self.registry.heartbeat(
+                    execution_id, self.worker_id, generation, self.lease_seconds)
+            except Exception:
+                # A shared-state outage cannot grant permission to keep running.
+                job.cancel()
+                return
             if status != "OK":
                 job.cancel()
                 return
