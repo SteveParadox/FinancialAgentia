@@ -84,7 +84,8 @@ class Orchestrator:
     def configure_tools(self, tool_executor: Any) -> None:
         self.execute_phase.configure_tools(tool_executor)
 
-    async def run(self, query: str, message_history: Optional[Any] = None) -> str:
+    async def run(self, query: str, message_history: Optional[Any] = None, *,
+                  evidence_collector: Optional[Any] = None) -> str:
         """Run without mutating shared history; API/service owns persistence."""
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query must be non-empty")
@@ -112,6 +113,12 @@ class Orchestrator:
                 context.current_plan.get_execution_order()
                 await asyncio.wait_for(self._execute(context), timeout=self.phase_timeouts["execute"])
                 context.completed_plans.append(context.current_plan)
+                if evidence_collector is not None:
+                    # Export task results for deterministic validation; never
+                    # expose execution-local data through shared orchestrator state.
+                    for task in context.current_plan.tasks:
+                        if task.status == "completed" and isinstance(task.result, dict):
+                            evidence_collector(task.result)
                 context.reflection = await asyncio.wait_for(self._reflect(context), timeout=self.phase_timeouts["reflect"])
                 incomplete_work = any(
                     task.status != "completed" for task in context.current_plan.tasks
