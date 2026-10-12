@@ -36,6 +36,7 @@ from dexter_py.utils.session_store import get_session_store
 from dexter_py.agent.orchestrator import Orchestrator
 from dexter_py.agent.tool_executor import ToolExecutor
 from dexter_py.tools.financial_datasets import register_financial_tools
+from dexter_py.agent.execution_registry import ExecutionRegistry
 from dexter_py.utils._utils import LLMConfig, configure_llm, close_llm_clients
 
 
@@ -62,6 +63,14 @@ async def lifespan(application: FastAPI):
     application.state.recent_requests = deque(maxlen=1000)
     application.state.session_locks = WeakValueDictionary()
     application.state.session_store = get_session_store()
+    application.state.execution_registry = None
+    if os.getenv("REDIS_URL"):
+        shared = ExecutionRegistry.from_env()
+        if not await shared.health():
+            raise RuntimeError("Durable execution Redis is unavailable")
+        application.state.execution_registry = shared
+    elif os.getenv("BACKEND_ENV", "development").lower() == "production":
+        raise RuntimeError("Production financial research requires REDIS_URL")
     model = os.getenv("LLM_MODEL", "gpt-4o-mini")
     iterations = int(os.getenv("AGENT_MAX_ITERATIONS", "3"))
     configure_llm(LLMConfig(default_model=model))
@@ -77,7 +86,8 @@ async def lifespan(application: FastAPI):
     try:
         yield
     finally:
-        for dependency in (application.state.session_store, tools, financial_provider):
+        for dependency in (application.state.session_store, tools, financial_provider,
+                           application.state.execution_registry):
             if dependency is None:
                 continue
             closer = getattr(dependency, "close", None)
@@ -155,12 +165,14 @@ async def ready():
     )
     tools_registered = (len(state.orchestrator.execute_phase.tool_executor.tools)
                         if initialized and hasattr(state.orchestrator.execute_phase.tool_executor, "tools") else 0)
-    # A configured LLM alone is not proof of financial research readiness.
-    ready = bool(initialized and provider_configured and tools_registered)
+    shared = getattr(state, "execution_registry", None)
+    shared_ready = bool(shared is not None and await shared.health())
+    ready = bool(initialized and provider_configured and tools_registered and shared_ready)
     return JSONResponse(
         {"ready": ready, "agent_initialized": bool(initialized),
          "model_provider_configured": bool(provider_configured),
-         "financial_tools_registered": bool(tools_registered)},
+         "financial_tools_registered": bool(tools_registered),
+         "durable_execution_registry_ready": shared_ready},
         status_code=200 if ready else 503,
     )
 
@@ -493,6 +505,12 @@ async def agent_query(request: Request, q: AgentQuery):
         SSE stream with agent response chunks
     """
     await require_auth(request)
+    if getattr(request.app.state, "execution_registry", None) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Use /api/v1/agents/executions for durable financial research")
+    if os.getenv("BACKEND_ENV", "development").lower() == "production":
+        raise HTTPException(status_code=503, detail="Durable financial research unavailable")
     
     request_id = getattr(request.state, "request_id", None)
     
@@ -671,3 +689,8 @@ async def create_session(request: Request):
         samesite="lax",
     )
     return response
+
+
+# Mount after require_auth is defined; single durable API, shared execution registry.
+from app.execution_api import router as execution_router
+app.include_router(execution_router)
