@@ -1,40 +1,33 @@
-# FinancialAgentia Python API
+# FinancialAgentia Python backend
 
-The FastAPI service has a direct LLM streaming endpoint (/query) and a
-separate multi-phase Python agent endpoint (/agent/query). The TypeScript
-repository retains the more complete financial research tools, which are
-not connected to the Python ToolExecutor in this phase.
+The supported research path is the Bun/Ink terminal frontend → versioned FastAPI
+admission API → Redis registry → Python worker → source-backed financial tools →
+validated research report. Python is the sole executor. The exported TypeScript
+`Agent` is a compatibility transport, not a separate tool runner.
 
-See [PHASE1_ARCHITECTURE.md](PHASE1_ARCHITECTURE.md) for the actual CLI
-execution path, agent/service contracts and deferred integration boundary.
+See [END_TO_END_OPERATIONS.md](END_TO_END_OPERATIONS.md) for setup, validation,
+upgrade/recovery, limits, contracts, and the exact verification boundary.
+Older Phase 1 documents describe previous versions and are not deployment guides.
 
-## Local start
+## Start
 
-From this directory:
+```sh
+python -m venv .venv
+# Activate the virtual environment for your shell.
+python -m pip install -r requirements.txt
+cp .env.example .env
+# Fill the Redis URL, authentication, model and provider credentials.
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+# Separate terminal, same environment:
+python -m app.execution_worker
+```
 
-    python -m venv .venv
-    # Activate .venv for your platform
-    python -m pip install -r requirements.txt
+From the repository root, run `bun install --frozen-lockfile`, set the matching
+client authentication from `env.example`, then `bun start`. `/history` lists saved
+executions; `/resume <execution ID>` retrieves a finished report or follows an
+active job. Ctrl+C while running requests server cancellation. Exiting or losing
+transport does not itself cancel a durable job.
 
-Configure OPENAI_API_KEY and, if desired, LLM_MODEL (default gpt-4o-mini).
-Do not place secrets in the repository. Then:
-
-    python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-
-Startup does not make a paid LLM call. It fails on invalid agent options or a
-configured but unreachable Redis store. GET /health checks liveness;
-GET /ready reports dependency configuration, not LLM connectivity.
-
-## Verify
-
-    python -m compileall -q app dexter_py
-    python -c "import app.main; print('Backend import successful')"
-    python -m pytest -q
-
-With a configured provider and server running, /query provides token SSE
-and /agent/query provides an SSE answer/error event and session cookie.
-Agent financial tools must be explicitly registered before they can run;
-there is no fake production quote tool.
-
-The React Ink CLI currently calls /query, not /agent/query. See the
-architecture note before attempting a cross-runtime migration.
+`/health` is liveness. `/ready` requires registered tools, configured model,
+reachable Redis and a recent worker heartbeat; it does not prove paid-provider
+entitlements or LLM connectivity. Live smoke tests are opt-in.

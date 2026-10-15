@@ -1,3 +1,5 @@
+> Current setup, recovery guarantees and remaining gates: [END_TO_END_OPERATIONS.md](END_TO_END_OPERATIONS.md). This earlier deployment note is retained as historical context.
+
 # Durable financial research (experimental deployment)
 
 **PR dependency notice:** PR #6 was merged into `main`; PR #7 was merged into

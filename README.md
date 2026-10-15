@@ -1,3 +1,5 @@
+> **Current execution guide:** [Python backend setup](python-backend/README.md) and [end-to-end operations](python-backend/END_TO_END_OPERATIONS.md). Research now runs on the Python durable worker; the Bun/Ink client requires that backend. Older local-agent setup sections below describe earlier versions.
+
 # FinancialAgentia
 
 An autonomous AI-powered financial research agent that conducts deep, methodical analysis of stocks and companies. FinancialAgentia leverages multi-phase reasoning, iterative planning, and comprehensive financial data tools to answer complex financial questions with accuracy and depth.
