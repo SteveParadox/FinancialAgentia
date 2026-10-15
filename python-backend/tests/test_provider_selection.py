@@ -83,3 +83,9 @@ def test_streaming_does_not_wait_for_callback_completion(monkeypatch):
         assert result == ["hello", " world"]
 
     asyncio.run(scenario())
+
+
+def test_readiness_requires_provider_sdk_even_with_a_key(monkeypatch):
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'fixture')
+    monkeypatch.setattr(llm, 'ChatAnthropic', None)
+    assert not llm.model_configuration_ready('claude-fixture')

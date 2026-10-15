@@ -6,11 +6,11 @@ import os
 import re
 import uuid
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
-from dexter_py.agent.execution_registry import ExecutionConflict, ExecutionRegistry, TERMINAL
+from dexter_py.agent.execution_registry import ExecutionConflict, ExecutionRegistry, ExecutionCapacity, TERMINAL
 
 router = APIRouter(prefix="/api/v1/agents/executions", tags=["financial research executions"])
 
@@ -60,16 +60,31 @@ async def admit(request: Request, body: Admission):
             principal=principal, session_id=session_id, query=body.query,
             idempotency_key=token,
             model=request.app.state.orchestrator.model,
+            request_session_id=body.session_id,
+            max_active=int(os.getenv("RESEARCH_MAX_ACTIVE_PER_USER", "5")),
             deadline_seconds=int(os.getenv("AGENT_EXECUTION_DEADLINE_SECONDS", "300")),
         )
+    except ExecutionCapacity:
+        raise HTTPException(status_code=429, detail="Active research limit reached", headers={"Retry-After": "10"})
     except ExecutionConflict:
         raise HTTPException(status_code=409, detail="Idempotency key conflict")
     except (TypeError, ValueError):
         raise HTTPException(status_code=422, detail="Invalid research admission parameters")
+    record = await registry.get(execution_id, principal)
     return {
-        "execution_id": execution_id, "session_id": session_id,
-        "created": created, "state": (await registry.get(execution_id, principal))["state"]
+        "protocol_version": 1,
+        "execution_id": execution_id, "session_id": record["session_id"],
+        "created": created, "state": record["state"]
     }
+
+
+@router.get("")
+async def history(request: Request, limit: int = Query(20, ge=1, le=100),
+                  before: float = Query(float("inf"), gt=0)):
+    registry, principal = await registry_and_principal(request)
+    records = await registry.list_jobs(principal, limit, before)
+    return {"protocol_version": 1, "executions": records,
+            "next_before": records[-1]["created_at"] if len(records) == limit else None}
 
 
 @router.post("/cancel-by-key")
@@ -129,6 +144,11 @@ async def events(execution_id: str, request: Request):
     async def stream():
         async for event_id, fields in registry.event_stream(
                 execution_id, principal, last_event_id):
+            if await request.is_disconnected():
+                return
+            if event_id is None:
+                yield b": heartbeat\n\n"
+                continue
             payload = {
                 "protocol_version": 1,
                 "execution_id": execution_id, "event_id": event_id,
@@ -149,7 +169,11 @@ async def events(execution_id: str, request: Request):
                 output["content"] = final.get("result", {}).get("answer", "")
                 output["report"] = final.get("result", {})
             else:
-                output["error"] = final["state"]
+                output["error"] = final.get("failure_code") or final["state"]
+                if final.get("result"):
+                    output["report"] = final["result"]
             yield ("data: " + json.dumps(output) + "\n\n").encode()
 
-    return StreamingResponse(stream(), media_type="text/event-stream; charset=utf-8")
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",
+    })

@@ -1,5 +1,6 @@
 """Canonical Python task execution phase; no simulated tool results."""
 import asyncio
+import random
 from datetime import datetime, timezone
 from typing import Any
 
@@ -99,6 +100,8 @@ class ExecutePhase:
                                 break
                             if attempt < task.max_retries:
                                 logger.warning("task_retry", task_id=task.id, attempt=attempt + 1)
+                                await asyncio.sleep(0.1 * 2 ** attempt + random.uniform(0, 0.05))
+                    task.result = {"tool_results": list(successful_calls.values())}
                     task.status = "failed"
                     context.task_results[task.id] = {"status": "failed", "error": task.error}
                 except asyncio.CancelledError:

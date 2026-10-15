@@ -90,6 +90,7 @@ def test_remote_cancel_blocks_success_and_is_idempotent(registry):
         assert await registry.finish(entry, "worker-a", worker[1],
                                      "SUCCEEDED", result={"answer": "should not commit"}) == "CANCELLED"
         assert (await registry.get(entry, "u"))["state"] == "CANCELLED"
+        assert "result" not in await registry.get(entry, "u")
         assert await registry.history("u", (await registry.get(entry, "u"))["session_id"]) == []
     run(check())
 

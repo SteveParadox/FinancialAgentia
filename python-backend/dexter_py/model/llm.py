@@ -133,6 +133,17 @@ def get_chat_model(model_name: str = DEFAULT_MODEL, streaming: bool = False):
     return ChatOpenAI(model=model_name, api_key=api_key, streaming=streaming)
 
 
+def model_configuration_ready(model: str) -> bool:
+    """Configuration probe only: no network, no paid calls and no credentials exposed."""
+    if model.startswith("ollama-"):
+        return ChatOllama is not None and (not model.endswith("-cloud") or bool(os.getenv("OLLAMA_API_KEY")))
+    if model.startswith("claude-"):
+        return ChatAnthropic is not None and bool(os.getenv("ANTHROPIC_API_KEY"))
+    if model.startswith("gemini-"):
+        return ChatGoogleGenerativeAI is not None and bool(os.getenv("GOOGLE_API_KEY"))
+    return model.startswith(("gpt-", "o1", "o3", "o4")) and ChatOpenAI is not None and bool(os.getenv("OPENAI_API_KEY"))
+
+
 async def call_llm(
     prompt: str,
     model: Optional[str] = None,
@@ -256,20 +267,20 @@ async def call_llm(
                 # agenerate often expects a list of message-lists
                 try:
                     resp = await asyncio.wait_for(
-                        client.agenerate(messages_wrapper, **kwargs),
+                        client.agenerate(messages_wrapper, max_tokens=max_tokens, temperature=temperature, **kwargs),
                         timeout=config.timeout
                     )
                 except TypeError:
                     # Some versions expect `messages=` kwarg
                     resp = await asyncio.wait_for(
-                        client.agenerate(messages=messages_wrapper, **kwargs),
+                        client.agenerate(messages=messages_wrapper, max_tokens=max_tokens, temperature=temperature, **kwargs),
                         timeout=config.timeout
                     )
                 response = resp
 
             elif hasattr(client, 'agenerate_messages'):
                 resp = await asyncio.wait_for(
-                    client.agenerate_messages(messages_wrapper, **kwargs),
+                    client.agenerate_messages(messages_wrapper, max_tokens=max_tokens, temperature=temperature, **kwargs),
                     timeout=config.timeout
                 )
                 response = resp
@@ -277,7 +288,7 @@ async def call_llm(
             # Synchronous/async predict fallback
             elif hasattr(client, 'apredict'):
                 resp_text = await asyncio.wait_for(
-                    client.apredict(enhanced_prompt, **kwargs),
+                    client.apredict(enhanced_prompt, max_tokens=max_tokens, temperature=temperature, **kwargs),
                     timeout=config.timeout
                 )
                 response = resp_text
@@ -285,7 +296,7 @@ async def call_llm(
             elif hasattr(client, 'predict'):
                 # run blocking predict in a thread
                 resp_text = await asyncio.wait_for(
-                    asyncio.to_thread(lambda: client.predict(enhanced_prompt, **kwargs)),
+                    asyncio.to_thread(lambda: client.predict(enhanced_prompt, max_tokens=max_tokens, temperature=temperature, **kwargs)),
                     timeout=config.timeout
                 )
                 response = resp_text
@@ -339,7 +350,6 @@ async def call_llm(
             classified = _classify_error(e)
             logger.error(
                 "llm_request_failed",
-                error=str(e),
                 error_type=type(e).__name__,
                 classified_type=type(classified).__name__ if classified is not None else None
             )
@@ -363,8 +373,8 @@ async def call_llm(
         except Exception as e:
             logger.error(
                 "structured_output_parsing_failed",
-                error=str(e),
-                content_preview=content[:200]
+                error_type=type(e).__name__,
+                content_length=len(content)
             )
             raise LLMParseError(
                 f"Failed to parse output as {output_model.__name__}: {str(e)}"
@@ -441,7 +451,7 @@ async def call_llm_stream(
         # hang if the provider never signals an on_llm_end event.
         if hasattr(client, "astream"):
             messages = messages_wrapper[0]
-            stream = client.astream(messages, **kwargs)
+            stream = client.astream(messages, max_tokens=max_tokens, temperature=temperature, **kwargs)
             try:
                 while True:
                     try:
@@ -505,7 +515,7 @@ async def call_llm_stream(
         logger.info("llm_stream_cancelled")
         raise
     except Exception as e:
-        logger.error("llm_stream_failed", error=str(e), error_type=type(e).__name__)
+        logger.error("llm_stream_failed", error_type=type(e).__name__)
         raise LLMError(f"Streaming failed: {str(e)}")
 
 

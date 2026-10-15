@@ -195,3 +195,58 @@ def test_invalid_inputs_cannot_open_shared_async_breaker():
                 await executor.execute("invalid", {"ticker": "BAD"})
     run(check())
     assert count["calls"] == 4
+
+
+def test_nested_company_identity_and_future_periods_rejected():
+    async def check():
+        for row in ({'ticker': 'MSFT', 'report_period': '2025-12-31'},
+                    {'ticker': 'AAPL', 'report_period': '2099-12-31'}):
+            async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda req: httpx.Response(200, json={'financials': {'income_statements': [row]}})
+            )) as http:
+                provider = FinancialDatasetsClient('test', http_client=http)
+                with pytest.raises(FinancialDataError):
+                    await provider.retrieve('get_all_financial_statements', 'AAPL')
+    run(check())
+
+
+def test_provider_rate_limit_retries_are_bounded():
+    calls = []
+    def limited(req):
+        calls.append(req)
+        return httpx.Response(429, headers={'retry-after': '0'})
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(limited)) as http:
+            with pytest.raises(FinancialDataError):
+                await FinancialDatasetsClient('test', http_client=http).retrieve('get_price_snapshot', 'AAPL')
+    run(check())
+    assert len(calls) == 3
+
+
+def test_cached_data_is_labelled_and_cannot_be_mutated_by_callers():
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda req: httpx.Response(200, json={'snapshot': {'price': 100, 'time': '2026-09-01'}})
+        )) as http:
+            provider = FinancialDatasetsClient('test', http_client=http)
+            first = await provider.retrieve('get_price_snapshot', 'AAPL')
+            first['data']['price'] = 999
+            second = await provider.retrieve('get_price_snapshot', 'AAPL')
+            assert second['data']['price'] == 100
+            assert second['cache_status'] == 'cached'
+    run(check())
+
+
+def test_concurrent_identical_provider_requests_share_validated_result():
+    calls = []
+    async def reply(req):
+        calls.append(req)
+        await asyncio.sleep(0.01)
+        return httpx.Response(200, json={'snapshot': {'price': 100, 'time': '2026-09-01'}})
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+            provider = FinancialDatasetsClient('fixture', http_client=http)
+            results = await asyncio.gather(*(provider.retrieve('get_price_snapshot', 'AAPL') for _ in range(8)))
+            assert len(calls) == 1
+            assert all(item['data']['price'] == 100 for item in results)
+    run(check())

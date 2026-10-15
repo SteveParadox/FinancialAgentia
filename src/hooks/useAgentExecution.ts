@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { executeDurableAgentQuery, cancelResearchExecution, cancelPendingResearch } from '../services/durable-agent-client.js';
+import { executeDurableAgentQuery, cancelResearchExecution, cancelPendingResearch, waitForResearchExecution } from '../services/durable-agent-client.js';
 import { generateId } from '../cli/types.js';
 import type { MessageHistory } from '../utils/message-history.js';
 import type { AgentProgressState } from '../components/AgentProgressView.js';
@@ -33,7 +33,7 @@ export function useAgentExecution(_options: { model: string; messageHistory: Mes
   const idempotencyKeyRef = useRef<string | null>(null);
   const requestGenerationRef = useRef(0);
 
-  const processQuery = useCallback(async (query: string): Promise<void> => {
+  const processQuery = useCallback(async (query: string, resumeId?: string): Promise<void> => {
     if (isProcessingRef.current) return;
     isProcessingRef.current = true;
     setIsProcessing(true);
@@ -57,7 +57,22 @@ export function useAgentExecution(_options: { model: string; messageHistory: Mes
       },
     });
     try {
-      const answer = await executeDurableAgentQuery(
+      const onStatus = (_state: string, phase: string | null) => {
+        if (generation !== requestGenerationRef.current || controller.signal.aborted || !phase) return;
+        const order = ['understand', 'plan', 'execute', 'reflect', 'answer', 'validate'];
+        const position = order.indexOf(phase);
+        if (position < 0) return;
+        const shown = phase === 'validate' ? 'reflect' : phase;
+        setCurrentTurn(prev => prev ? { ...prev, state: {
+          ...prev.state, currentPhase: shown as AgentProgressState['currentPhase'],
+          understandComplete: position > 0, planComplete: position > 1,
+          reflectComplete: position > 3, researchingBackend: true,
+        }} : prev);
+      };
+      if (resumeId) executionIdRef.current = resumeId;
+      const answer = resumeId
+        ? await waitForResearchExecution(resumeId, controller.signal, onStatus)
+        : await executeDurableAgentQuery(
         query, sessionIdRef.current, controller.signal,
         (executionId: string) => {
           if (generation === requestGenerationRef.current && !controller.signal.aborted) {
@@ -73,24 +88,7 @@ export function useAgentExecution(_options: { model: string; messageHistory: Mes
             void cancelPendingResearch(token).catch(() => undefined);
           }
         },
-        (_state: string, phase: string | null) => {
-          if (generation !== requestGenerationRef.current || controller.signal.aborted || !phase) return;
-          const order = ['understand', 'plan', 'execute', 'reflect', 'answer', 'validate'];
-          const position = order.indexOf(phase);
-          if (position < 0) return;
-          const shown = phase === 'validate' ? 'reflect' : phase;
-          setCurrentTurn(prev => prev ? {
-            ...prev,
-            state: {
-              ...prev.state,
-              currentPhase: shown as AgentProgressState['currentPhase'],
-              understandComplete: position > 0,
-              planComplete: position > 1,
-              reflectComplete: position > 3,
-              researchingBackend: true,
-            },
-          } : prev);
-        },
+        onStatus,
       );
       if (controller.signal.aborted || generation !== requestGenerationRef.current) {
         throw new Error('Agent execution interrupted');

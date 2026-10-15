@@ -26,6 +26,8 @@ class StructuredLLMClient:
         """
         Get structured output with validation and fallback strategies
         """
+        if type(max_retries) is not int or not 1 <= max_retries <= 3:
+            raise ValueError("Structured retry budget must be between 1 and 3")
         for attempt in range(max_retries):
             try:
                 # Use the native structured output support in llm.py
@@ -48,7 +50,7 @@ class StructuredLLMClient:
                 logger.warning(
                     "structured_output_parse_failed",
                     attempt=attempt + 1,
-                    error=str(e),
+                    error_type=type(e).__name__,
                     model=self.model
                 )
                 if attempt == max_retries - 1:
@@ -56,7 +58,7 @@ class StructuredLLMClient:
                 # Increase temperature slightly on retry to avoid repetition
                 temperature = min(temperature + 0.1, 1.0)
             except LLMError as e:
-                logger.error("llm_error", error=str(e))
+                logger.error("llm_error", error_type=type(e).__name__)
                 raise
     
     async def stream_text(

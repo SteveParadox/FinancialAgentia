@@ -105,3 +105,59 @@ def test_price_without_currency_must_remain_partial():
                       supporting_evidence_ids=[unpriced.evidence_id])
     ])
     assert not validate_claims(proposed, [unpriced])[0]
+
+
+def test_valid_number_cannot_launder_unsupported_model_prose():
+    sources, evidence = normalize_tool_evidence(real_fixture())
+    proposed = ProposedClaims(claims=[ProposedClaim(
+        statement='AAPL guaranteed profit of 195.25 and no risk', metric='price',
+        value='195.25', supporting_evidence_ids=[evidence[0].evidence_id])])
+    claims, _ = validate_claims(proposed, evidence)
+    report = verified_report('r', 's', sources, evidence, claims, [])
+    assert 'guaranteed' not in report.answer
+    assert 'no risk' not in report.answer
+    assert 'price: 195.25' in report.answer
+    assert '2026-10-10' in report.answer
+
+
+def test_future_or_malformed_observations_cannot_be_verified():
+    for timestamp in ['2099-01-01', 'not-a-date', '2099-01-01T12:00:00Z']:
+        fixture = real_fixture()
+        fixture[0]['tool_results'][0]['result']['data_timestamp'] = timestamp
+        assert normalize_tool_evidence(fixture) == ([], [])
+
+
+def test_combined_financials_and_derived_ratio_have_lineage():
+    fixture = real_fixture()
+    result = fixture[0]['tool_results'][0]['result']
+    result['data_timestamp'] = '2025-12-31'
+    result['data'] = {'financials': []}  # Unsupported envelope cannot invent facts.
+    assert normalize_tool_evidence(fixture) == ([], [])
+    result.update({'derived': True, 'report_period': '2025-12-31', 'currency': 'USD',
+                   'input_records': [{'report_period': '2025-12-31', 'revenue': 100, 'net_income': 20}],
+                   'data': {'net_profit_margin': '0.2'},
+                   'calculation_methods': {'net_profit_margin': 'net_income / revenue'}})
+    sources, evidence = normalize_tool_evidence(fixture)
+    ratio = next(e for e in evidence if e.metric == 'net_profit_margin')
+    assert ratio.unit == 'fraction' and ratio.currency is None
+    assert len(ratio.input_evidence_ids) == 2
+    assert ratio.evidence_type == 'CALCULATED'
+    assert set(ratio.input_evidence_ids) <= {e.evidence_id for e in evidence}
+
+
+def test_news_headlines_keep_publisher_date_deduplicate_and_remain_unconfirmed():
+    fixture = real_fixture()
+    result = fixture[0]['tool_results'][0]['result']
+    result.update({'source_url': 'https://api.financialdatasets.ai/news/?ticker=AAPL', 'data': [
+        {'ticker': 'AAPL', 'title': 'Company earnings update', 'source': 'Example publisher',
+         'date': '2026-10-09', 'url': 'https://publisher.example/article'},
+        {'ticker': 'AAPL', 'title': 'Duplicate update', 'source': 'Example publisher',
+         'date': '2026-10-09', 'url': 'https://publisher.example/article?tracking=true'},
+        {'ticker': 'AAPL', 'title': 'Future news', 'date': '2099-10-09', 'url': 'https://publisher.example/future'},
+    ]})
+    sources, evidence = normalize_tool_evidence(fixture)
+    assert len(sources) == 1 and not evidence
+    report = verified_report('r', 's', sources, evidence, [], [])
+    assert report.status == 'PARTIAL'
+    assert 'Example publisher' in report.answer and '2026-10-09' in report.answer
+    assert 'not independently confirmed' in report.answer and 'Future news' not in report.answer

@@ -34,6 +34,7 @@ import {
 } from './utils/env.js';
 import { MessageHistory } from './utils/message-history.js';
 
+import { listResearchExecutions } from './services/durable-agent-client.js';
 import { DEFAULT_PROVIDER } from './model/llm.js';
 import { colors } from './theme.js';
 
@@ -176,11 +177,11 @@ export function CLI() {
    * Wraps processQuery to handle state transitions and errors
    */
   const executeQuery = useCallback(
-    async (query: string) => {
+    async (query: string, resumeId?: string) => {
       const run = ++activeRunRef.current;
       setState('running');
       try {
-        await processQuery(query);
+        await processQuery(query, resumeId);
       } catch (e) {
         if (run !== activeRunRef.current) return;
         if ((e as Error).message?.includes('interrupted')) {
@@ -214,6 +215,23 @@ export function CLI() {
         return;
       }
 
+      if (query === '/history') {
+        void listResearchExecutions().then(items => {
+          setStatusMessage(items.length ? items.map(item =>
+            `${item.execution_id}  ${item.state}  ${item.current_phase || ''}`
+          ).join('\n') + '\nUse /resume <execution ID> to retrieve or follow a report.' : 'No saved research in the retention window.');
+        }).catch(error => setStatusMessage(`History unavailable: ${error}`));
+        return;
+      }
+      if (query.startsWith('/resume ')) {
+        if (state === 'running') {
+          setStatusMessage('Finish or cancel the current research before resuming another.');
+          return;
+        }
+        const id = query.slice(8).trim();
+        void executeQuery(`Resumed research ${id}`, id);
+        return;
+      }
       if (query === '/model') {
         setStatusMessage('The authoritative agent model is configured on the Python backend using LLM_MODEL.');
         return;
