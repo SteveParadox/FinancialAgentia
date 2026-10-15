@@ -102,3 +102,12 @@ test('streaming response budget is enforced even without a content length', asyn
   await expect(executeDurableAgentQuery('AAPL', null, new AbortController().signal, () => {}))
     .rejects.toThrow('response too large');
 });
+
+test('model configuration comes from authenticated backend rather than local selection', async () => {
+  const { getResearchModel } = await import('./durable-agent-client.js');
+  mockFetch(async input => {
+    expect(String(input)).toEndWith('/api/v1/model');
+    return Response.json({ protocol_version: 1, provider: 'openai', model: 'openai/gpt-4.1', configured: true });
+  });
+  expect(await getResearchModel()).toEqual({ provider: 'openai', model: 'openai/gpt-4.1', configured: true });
+});

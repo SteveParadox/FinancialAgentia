@@ -163,3 +163,11 @@ fixtures, runs the Bun transport, reconnects, fetches history, validates the wir
 report and renders AnswerBox through Ink. It does not validate paid API access or
 an installed production reverse proxy. See the engineering report for actual
 commands/results and remaining release gates.
+
+## OpenAI integration review follow-up
+
+See [OPENAI_SETUP.md](OPENAI_SETUP.md). OpenAI uses its official SDK directly;
+reasoning-model token/message parameters are normalized, and there is no Ollama
+service requirement. The authenticated `/api/v1/model` endpoint and terminal
+`/model` command expose the backend's actual model configuration without keys.
+A queued job's persisted model must match the worker before any research executes.

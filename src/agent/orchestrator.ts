@@ -58,6 +58,7 @@ export class Agent {
             this.options.callbacks?.onPhaseStart?.(phase as Phase);
           }
         });
+      if (controller.signal.aborted) throw new Error("Research cancelled");
       this.sessionId = answer.session_id;
       this.options.callbacks?.onAnswerStart?.();
       this.options.callbacks?.onAnswerStream?.((async function* () { yield answer.content; })());
@@ -71,9 +72,11 @@ export class Agent {
   }
 
   async cancel(): Promise<void> {
-    if (this.executionId) await cancelResearchExecution(this.executionId);
-    else if (this.idempotencyKey) await cancelPendingResearch(this.idempotencyKey);
+    const executionId = this.executionId;
+    const idempotencyKey = this.idempotencyKey;
     this.controller?.abort();
+    if (executionId) await cancelResearchExecution(executionId);
+    else if (idempotencyKey) await cancelPendingResearch(idempotencyKey);
   }
 
   /** Legacy local view; durable conversation truth lives on the backend. */

@@ -161,3 +161,12 @@ def test_news_headlines_keep_publisher_date_deduplicate_and_remain_unconfirmed()
     assert report.status == 'PARTIAL'
     assert 'Example publisher' in report.answer and '2026-10-09' in report.answer
     assert 'not independently confirmed' in report.answer and 'Future news' not in report.answer
+
+
+def test_timestamp_shaped_fiscal_period_cannot_crash_report_validation():
+    fixture = real_fixture()
+    result = fixture[0]['tool_results'][0]['result']
+    result['data'] = [{'report_period': '2025-12-31T00:00:00Z', 'revenue': 100},
+                      {'report_period': '2025-12-31', 'revenue': 100}]
+    _, evidence = normalize_tool_evidence(fixture)
+    assert len(evidence) == 1 and evidence[0].period_end.isoformat() == '2025-12-31'

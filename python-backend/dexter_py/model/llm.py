@@ -1,7 +1,7 @@
-"""A minimal Python port of the TypeScript LLM wrapper (model/llm.ts).
+"""Central model routing, bounded completion/streaming and schema validation.
 
-This implements a best-effort mapping using python-langchain's ChatOpenAI model.
-It intentionally supports OpenAI by default; other providers may be added later.
+OpenAI uses the official SDK transport; optional providers retain their
+LangChain adapters. Research orchestration consumes one shared interface.
 """
 import os
 import asyncio
@@ -59,6 +59,8 @@ try:
 except Exception:
     AsyncCallbackHandler = None
 
+from .openai_client import OpenAIChatClient
+
 from ..utils._utils import (
     _classify_error,
     _build_system_prompt_with_tools,
@@ -68,6 +70,7 @@ from ..utils._utils import (
     LLMError,
     LLMRateLimitError,
     LLMTimeoutError,
+    LLMConnectionError,
     LLMParseError,
 )
 DEFAULT_PROVIDER = "openai"
@@ -86,9 +89,17 @@ import os
 
 def get_chat_model(model_name: str = DEFAULT_MODEL, streaming: bool = False):
     """Select a provider by the explicitly configured model, fail closed."""
-    if not isinstance(model_name, str) or not model_name:
+    if not isinstance(model_name, str) or not model_name.strip():
         raise ValueError("model_name must be non-empty")
-    if model_name.startswith("ollama-"):
+    model_name = model_name.strip()
+    if any(c.isspace() for c in model_name):
+        raise ValueError("Model ID cannot contain whitespace")
+    explicit_openai = model_name.startswith("openai/")
+    if explicit_openai:
+        model_name = model_name.removeprefix("openai/")
+        if not model_name or any(char.isspace() for char in model_name):
+            raise ValueError("OpenAI model ID must be non-empty and contain no whitespace")
+    if not explicit_openai and model_name.startswith("ollama-"):
         if ChatOllama is None:
             raise RuntimeError("langchain-ollama is required for Ollama models")
         is_cloud = model_name.endswith("-cloud")
@@ -109,39 +120,54 @@ def get_chat_model(model_name: str = DEFAULT_MODEL, streaming: bool = False):
                 "headers": {"Authorization": f"Bearer {api_key}"}
             }
         return ChatOllama(**kwargs)
-    if model_name.startswith("claude-"):
+    if not explicit_openai and model_name.startswith("claude-"):
         if ChatAnthropic is None:
             raise RuntimeError("langchain-anthropic required for Claude models")
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise RuntimeError("ANTHROPIC_API_KEY not set")
         return ChatAnthropic(model=model_name, anthropic_api_key=api_key, streaming=streaming)
-    if model_name.startswith("gemini-"):
+    if not explicit_openai and model_name.startswith("gemini-"):
         if ChatGoogleGenerativeAI is None:
             raise RuntimeError("langchain-google-genai required for Gemini models")
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
             raise RuntimeError("GOOGLE_API_KEY not set")
         return ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key, streaming=streaming)
-    if not model_name.startswith(("gpt-", "o1", "o3", "o4")):
+    if not explicit_openai and not model_name.startswith(("gpt-", "o1", "o3", "o4")):
         raise ValueError(f"Unrecognized model/provider: {model_name}")
-    if ChatOpenAI is None:
-        raise RuntimeError("langchain-openai required for OpenAI models")
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = get_llm_config().api_key or os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY not set")
-    return ChatOpenAI(model=model_name, api_key=api_key, streaming=streaming)
+    return OpenAIChatClient(model=model_name, api_key=api_key, timeout=get_llm_config().timeout)
+
+
+def model_provider(model: str) -> str:
+    if model.startswith("openai/") or model.startswith(("gpt-", "o1", "o3", "o4")):
+        return "openai"
+    if model.startswith("ollama-"):
+        return "ollama"
+    if model.startswith("claude-"):
+        return "anthropic"
+    if model.startswith("gemini-"):
+        return "google"
+    return "unknown"
 
 
 def model_configuration_ready(model: str) -> bool:
     """Configuration probe only: no network, no paid calls and no credentials exposed."""
+    if not model or any(c.isspace() for c in model):
+        return False
     if model.startswith("ollama-"):
         return ChatOllama is not None and (not model.endswith("-cloud") or bool(os.getenv("OLLAMA_API_KEY")))
     if model.startswith("claude-"):
         return ChatAnthropic is not None and bool(os.getenv("ANTHROPIC_API_KEY"))
     if model.startswith("gemini-"):
         return ChatGoogleGenerativeAI is not None and bool(os.getenv("GOOGLE_API_KEY"))
-    return model.startswith(("gpt-", "o1", "o3", "o4")) and ChatOpenAI is not None and bool(os.getenv("OPENAI_API_KEY"))
+    if model.startswith("openai/"):
+        name = model.removeprefix("openai/")
+        return bool(name and not any(c.isspace() for c in name) and (get_llm_config().api_key or os.getenv("OPENAI_API_KEY") or "").strip())
+    return model.startswith(("gpt-", "o1", "o3", "o4")) and bool((get_llm_config().api_key or os.getenv("OPENAI_API_KEY") or "").strip())
 
 
 async def call_llm(
@@ -228,7 +254,7 @@ async def call_llm(
             min=config.retry_min_wait,
             max=config.retry_max_wait
         ),
-        retry=retry_if_exception_type((LLMRateLimitError, LLMTimeoutError, ConnectionError)),
+        retry=retry_if_exception_type((LLMRateLimitError, LLMTimeoutError, LLMConnectionError, ConnectionError)),
         reraise=True
     )
     async def _make_request() -> str:
@@ -262,21 +288,13 @@ async def call_llm(
                     timeout=config.timeout
                 )
 
-            # Secondary: LangChain ChatModel async generation interfaces
+            # Shared completion adapter interface (OpenAI SDK or LangChain).
             elif hasattr(client, 'agenerate'):
                 # agenerate often expects a list of message-lists
-                try:
-                    resp = await asyncio.wait_for(
-                        client.agenerate(messages_wrapper, max_tokens=max_tokens, temperature=temperature, **kwargs),
-                        timeout=config.timeout
-                    )
-                except TypeError:
-                    # Some versions expect `messages=` kwarg
-                    resp = await asyncio.wait_for(
-                        client.agenerate(messages=messages_wrapper, max_tokens=max_tokens, temperature=temperature, **kwargs),
-                        timeout=config.timeout
-                    )
-                response = resp
+                response = await asyncio.wait_for(
+                    client.agenerate(messages_wrapper, max_tokens=max_tokens, temperature=temperature, **kwargs),
+                    timeout=config.timeout
+                )
 
             elif hasattr(client, 'agenerate_messages'):
                 resp = await asyncio.wait_for(
@@ -334,7 +352,7 @@ async def call_llm(
                 content = str(response)
 
             # Log usage if available
-            if hasattr(response, 'usage'):
+            if getattr(response, 'usage', None) is not None:
                 usage = response.usage
                 logger.info(
                     "llm_usage",
@@ -353,7 +371,7 @@ async def call_llm(
                 error_type=type(e).__name__,
                 classified_type=type(classified).__name__ if classified is not None else None
             )
-            raise classified
+            raise classified from None
     
     # Execute with retry
     try:
@@ -376,9 +394,7 @@ async def call_llm(
                 error_type=type(e).__name__,
                 content_length=len(content)
             )
-            raise LLMParseError(
-                f"Failed to parse output as {output_model.__name__}: {str(e)}"
-            )
+            raise LLMParseError(f"Failed to parse output as {output_model.__name__}") from None
     
     return content
 
@@ -516,7 +532,10 @@ async def call_llm_stream(
         raise
     except Exception as e:
         logger.error("llm_stream_failed", error_type=type(e).__name__)
-        raise LLMError(f"Streaming failed: {str(e)}")
+        classified = _classify_error(e)
+        if isinstance(classified, LLMError):
+            raise classified from None
+        raise LLMError(f"Model streaming failed ({type(e).__name__})") from None
 
 
 def _parse_structured_output(content: str, output_model: Type[T]) -> T:

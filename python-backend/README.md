@@ -31,3 +31,16 @@ transport does not itself cancel a durable job.
 `/health` is liveness. `/ready` requires registered tools, configured model,
 reachable Redis and a recent worker heartbeat; it does not prove paid-provider
 entitlements or LLM connectivity. Live smoke tests are opt-in.
+
+## OpenAI connection
+
+Set `LLM_MODEL=gpt-4o-mini` and `OPENAI_API_KEY` in the backend `.env`, then
+restart both API and worker processes. No Ollama server or Ollama key is needed.
+`openai/<model-id>` explicitly routes a custom/fine-tuned ID to OpenAI.
+
+Run `python scripts/check_model_connection.py` to inspect configuration without
+an external request. Add `--live` to send one short model request (API usage may
+be billed). The terminal `/model` command shows the actual authenticated backend
+configuration; provider keys stay on the backend.
+
+See [OPENAI_SETUP.md](OPENAI_SETUP.md) for setup and troubleshooting.

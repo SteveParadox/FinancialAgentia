@@ -1,5 +1,9 @@
 # FinancialAgentia engineering report — 15 October 2026
 
+Latest follow-up validation: **128 Python tests passed; 14 Bun tests passed**.
+See section L for the implementation review and OpenAI connection changes.
+The original-delivery baseline and results below are retained for traceability.
+
 ## A. Initial architecture assessment
 
 Inspected default branch `main` at
@@ -227,3 +231,66 @@ connected GitHub account, and the remote trees matched the tested local trees
 exactly (`c56bc884603b6ccec3d45856a0b11940da797c35` before this report addendum).
 This report addendum changes documentation only. Hosted checks remain blocked
 as described above. No merge or production rollout occurred.
+
+
+## L. Follow-up implementation review and OpenAI connection
+
+OpenAI routing existed in the first delivery, but its LangChain request path
+unconditionally sent legacy max_tokens and temperature parameters. Reasoning
+models could reject those requests. The follow-up uses the already installed
+official OpenAI SDK directly and keeps the shared completion/streaming interface.
+It adds max_completion_tokens, reasoning-family message/sampling compatibility,
+explicit openai/<model-id> routing, normal completion/refusal checks, bounded
+retries and deterministic transport cleanup. No Ollama service is required.
+
+Additional confirmed/corrected implementation gaps:
+
+- A broad TypeError fallback could issue another model request for an internal
+  adapter error; it now propagates without duplicate execution.
+- Connection/server errors did not consistently enter the transient retry class.
+  Typed SDK exceptions now normalize to bounded retry categories; 401 is not
+  retried, and SDK retries are disabled so budgets do not multiply.
+- Raw provider error bodies and structured validation error values could leak
+  into exception text. They are now normalized without echoing keys/model data.
+- A restarted worker could execute an admitted job under its current model
+  rather than its persisted model. It now fails MODEL_CONFIGURATION_CHANGED
+  before performing external work when these differ.
+- A timestamp-shaped fiscal period could pass a preliminary date check and then
+  crash evidence normalization. The malformed row is rejected without discarding
+  other valid records.
+- The exported TypeScript Agent waited for remote cancellation before aborting
+  local transport. It now interrupts locally first and prevents late publication.
+- The terminal /model command gave configuration instructions but did not show
+  server truth. It now reads authenticated GET /api/v1/model; provider keys remain
+  on the backend. The unused frontend API-key readiness hook was disconnected.
+
+Follow-up validation in the same Python/Bun/Redis versions recorded above:
+
+| Command / check | Result |
+| --- | --- |
+| Real Redis + `PYTHONPATH=python-backend python -m pytest -q python-backend`, Bun on PATH | **128 passed, 12 skipped, 231 warnings in 16.99s** |
+| `bun run typecheck` | Passed |
+| `bun test` | **14 passed, 0 failed; 28 expectations** |
+| `bun run build` | Passed; 23 local modules, external runtime dependencies |
+| `ruff check python-backend` | Passed configured targeted checks |
+| `scripts/export_contracts.py --check` | Passed; financial wire schema unchanged |
+| Dependency installation / `pip check` | Passed / no broken requirements |
+| `python python-backend/scripts/check_model_connection.py` | provider=openai, configured=false, live_verified=false |
+
+Tests exercise actual SDK request encoding, authorization headers, JSON parsing,
+SSE decoding, output limits, reasoning/classic model options, malformed/truncated/
+refused responses, bounded retries and resource closure through mocked HTTP.
+A real Redis/API/worker/orchestrator test additionally completes a research job
+through that SDK transport, retrieves financial fixtures, verifies evidence and
+persists the report while Ollama is unavailable. These are not paid live calls.
+
+No OpenAI API key was available in the implementation environment. Live
+connection validation remains blocked. The configuration-only check makes no
+network request. `scripts/check_model_connection.py --live` is an explicit
+single-request smoke test using actual configured credentials. Follow
+[OPENAI_SETUP.md](python-backend/OPENAI_SETUP.md), restart both API and worker,
+and inspect `/model` in the terminal frontend.
+
+The earlier live-provider, hosted CI billing and production-infrastructure gates
+remain open unless separately verified. This follow-up does not authorize or
+claim deployment/merge, nor complete all original production-readiness work.

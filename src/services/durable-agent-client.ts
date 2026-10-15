@@ -113,6 +113,17 @@ export async function executeDurableAgentQuery(
   return waitForResearchExecution(executionId, joined, onStatus, acceptedSession);
 }
 
+export async function getResearchModel(): Promise<{ model: string; provider: string; configured: boolean }> {
+  const response = await jsonResponse(await fetch(endpoint('/api/v1/model'), {
+    headers: headers(), signal: AbortSignal.timeout(10_000),
+  }));
+  if (response.protocol_version !== 1 || typeof response.model !== 'string' ||
+      typeof response.provider !== 'string' || typeof response.configured !== 'boolean') {
+    throw new Error('Invalid backend model configuration');
+  }
+  return { model: response.model, provider: response.provider, configured: response.configured };
+}
+
 export async function listResearchExecutions(): Promise<Record<string, unknown>[]> {
   const response = await jsonResponse(await fetch(endpoint('/api/v1/agents/executions'), {
     headers: headers(), signal: AbortSignal.timeout(10_000),

@@ -197,3 +197,79 @@ def test_readiness_handles_dependency_outage_as_503(configured, monkeypatch):
         assert ready.json()['durable_execution_registry_ready'] is False
         assert (await api.get('/health')).status_code == 200
     run(exercise_setup(scenario))
+
+
+def test_worker_rejects_changed_model_instead_of_running_wrong_provider(configured):
+    async def scenario(api, worker, requests):
+        response = await api.post('/api/v1/agents/executions', json={'query': 'AAPL'},
+                                  headers=auth(**{'Idempotency-Key': 'model-config-mismatch'}))
+        job = response.json()['execution_id']
+        claim = await worker.registry.claim(worker.worker_id, 5)
+        worker.orchestrator.model = 'openai/gpt-4.1'
+        assert await worker.process(*claim) == 'FAILED'
+        final = (await api.get('/api/v1/agents/executions/' + job, headers=auth())).json()
+        assert final['failure_code'] == 'MODEL_CONFIGURATION_CHANGED'
+        assert not requests and 'result' not in final
+    run(exercise_setup(scenario))
+
+
+def test_authenticated_backend_model_configuration_is_truthful(configured, monkeypatch):
+    async def scenario(api, worker, requests):
+        monkeypatch.setenv('OPENAI_API_KEY', 'fixture-openai-secret')
+        monkeypatch.delenv('OLLAMA_API_KEY', raising=False)
+        assert (await api.get('/api/v1/model')).status_code == 401
+        response = await api.get('/api/v1/model', headers=auth())
+        assert response.json() == {'protocol_version': 1, 'provider': 'openai',
+                                   'model': 'gpt-4o-mini', 'configured': True}
+        assert 'fixture-openai-secret' not in response.text and not requests
+    run(exercise_setup(scenario))
+
+
+def test_complete_research_uses_openai_sdk_http_without_ollama(configured, monkeypatch):
+    from dexter_py.model import llm
+    from dexter_py.model.openai_client import OpenAIChatClient
+    from test_openai_transport import completion
+
+    async def scenario(api, worker, provider_requests):
+        model_requests = []
+        async def model_reply(request):
+            body = json.loads(request.content)
+            model_requests.append(body)
+            assert request.url.host == 'api.openai.com'
+            assert body['model'] == 'gpt-4.1' and body['max_completion_tokens'] == 4096
+            if body.get('stream'):
+                frames = [{'id': 'chatcmpl-fixture', 'object': 'chat.completion.chunk', 'created': 1,
+                           'model': 'gpt-4.1', 'choices': [{'index': 0, 'delta': {'content': 'Untrusted draft.'}, 'finish_reason': None}]},
+                          {'id': 'chatcmpl-fixture', 'object': 'chat.completion.chunk', 'created': 1,
+                           'model': 'gpt-4.1', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]}]
+                return httpx.Response(200, headers={'content-type': 'text/event-stream'},
+                                      text=''.join('data: '+json.dumps(frame)+'\n\n' for frame in frames)+'data: [DONE]\n\n')
+            schema = json.loads(body['messages'][-1]['content'].rsplit('```json\n', 1)[-1].split('\n```')[0])
+            model = {'Understanding': Understanding, 'Plan': Plan, 'ReflectionOutput': ReflectionOutput,
+                     'ProposedClaims': ProposedClaims}[schema['title']]
+            result = await ResearchLLM().complete_structured(output_model=model)
+            return httpx.Response(200, json=completion(result.model_dump_json()))
+
+        client = OpenAIChatClient('gpt-4.1', 'fixture-openai-secret',
+                                  http_client=httpx.AsyncClient(transport=httpx.MockTransport(model_reply)))
+        async def get_client(model):
+            return client
+        monkeypatch.setattr(llm, 'get_llm_client', get_client)
+        monkeypatch.setattr(llm, 'ChatOllama', None)
+        monkeypatch.delenv('OLLAMA_API_KEY', raising=False)
+        tools = worker.orchestrator.execute_phase.tool_executor
+        worker.orchestrator = Orchestrator('openai/gpt-4.1', max_iterations=1, tool_executor=tools)
+        main.app.state.orchestrator = worker.orchestrator
+        try:
+            response = await api.post('/api/v1/agents/executions', json={'query': 'Research AAPL'},
+                                      headers=auth(**{'Idempotency-Key': 'official-openai-pipeline'}))
+            job = response.json()['execution_id']
+            claim = await worker.registry.claim(worker.worker_id, 5)
+            assert await worker.process(*claim) == 'SUCCEEDED'
+            final = (await api.get('/api/v1/agents/executions/' + job, headers=auth())).json()
+            assert 'AAPL price: 100' in final['result']['answer']
+            assert len(model_requests) == 5 and len(provider_requests) == 2
+            assert final['result']['evidence'] and final['result']['sources']
+        finally:
+            await client.aclose()
+    run(exercise_setup(scenario))

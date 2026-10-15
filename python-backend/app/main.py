@@ -31,7 +31,7 @@ from slowapi.errors import RateLimitExceeded
 # Metrics
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 
-from dexter_py.model.llm import call_llm_stream, model_configuration_ready
+from dexter_py.model.llm import call_llm_stream, model_configuration_ready, model_provider
 from dexter_py.utils.session_store import get_session_store
 from dexter_py.agent.orchestrator import Orchestrator
 from dexter_py.agent.tool_executor import ToolExecutor
@@ -174,6 +174,14 @@ async def ready():
          "research_workers_ready": workers_ready},
         status_code=200 if ready else 503,
     )
+
+
+@app.get("/api/v1/model")
+async def configured_model(request: Request):
+    await require_auth(request)
+    model = request.app.state.orchestrator.model
+    return {"protocol_version": 1, "provider": model_provider(model), "model": model,
+            "configured": model_configuration_ready(model)}
 
 
 @app.get("/api/v1/tools")

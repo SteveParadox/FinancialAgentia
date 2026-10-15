@@ -189,7 +189,10 @@ def normalize_tool_evidence(task_results: list[dict]) -> tuple[list[FinancialSou
                 period_raw = row.get("report_period") or result.get("report_period")
                 if period_raw and not _valid_time(period_raw, retrieved):
                     continue
-                period = date.fromisoformat(period_raw) if period_raw else None
+                try:
+                    period = date.fromisoformat(period_raw) if period_raw else None
+                except (ValueError, TypeError):
+                    continue  # One malformed fiscal period cannot crash all report validation.
                 observation = row.get("time") or row.get("date") or result.get("data_timestamp")
                 if observation and not _valid_time(observation, retrieved):
                     continue

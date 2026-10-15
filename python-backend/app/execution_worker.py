@@ -23,6 +23,10 @@ from dexter_py.agent.financial_evidence import (
 )
 
 
+class ModelConfigurationChanged(RuntimeError):
+    """A queued job must not silently change model after a worker restart."""
+
+
 class ReadOnlyHistory:
     def __init__(self, turns: list[dict]):
         self.turns = turns
@@ -65,6 +69,8 @@ class ExecutionWorker:
         record = await self.registry.redis.hgetall(self.registry._key(execution_id))
         if record.get("generation") != str(generation) or record.get("owner") != self.worker_id:
             raise RuntimeError("Worker ownership lost before research")
+        if record.get("model_version") != self.orchestrator.model:
+            raise ModelConfigurationChanged
         history = ReadOnlyHistory(await self.registry.history(record["principal"], record["session_id"]))
         raw_results: list[dict] = []
         artifacts: dict = {}
@@ -180,6 +186,9 @@ class ExecutionWorker:
             # or a lease may have been lost. Fenced finish rejects stale owners.
             outcome = "CANCELLED"
             error = "EXECUTION_CANCELLED"
+        except ModelConfigurationChanged:
+            outcome = "FAILED"
+            error = "MODEL_CONFIGURATION_CHANGED"
         except TimeoutError:
             outcome = "TIMED_OUT"
             error = "EXECUTION_TIMED_OUT"

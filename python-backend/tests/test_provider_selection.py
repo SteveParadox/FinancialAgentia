@@ -89,3 +89,27 @@ def test_readiness_requires_provider_sdk_even_with_a_key(monkeypatch):
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'fixture')
     monkeypatch.setattr(llm, 'ChatAnthropic', None)
     assert not llm.model_configuration_ready('claude-fixture')
+
+
+@pytest.mark.parametrize('model', ['gpt-4o-mini', 'gpt-5.2', 'o3', 'openai/ft:gpt-4o-mini:org:name:id'])
+def test_openai_factory_is_independent_of_ollama(monkeypatch, model):
+    captured = {}
+    def factory(**options):
+        captured.update(options)
+        return object()
+    monkeypatch.setenv('OPENAI_API_KEY', 'fixture-openai-key')
+    monkeypatch.delenv('OLLAMA_API_KEY', raising=False)
+    monkeypatch.setattr(llm, 'ChatOllama', None)
+    monkeypatch.setattr(llm, 'OpenAIChatClient', factory)
+    assert llm.model_configuration_ready(model)
+    llm.get_chat_model(model)
+    assert captured['api_key'] == 'fixture-openai-key'
+    assert captured['model'] == model.removeprefix('openai/')
+    assert llm.model_provider(model) == 'openai'
+
+
+def test_readiness_and_factory_reject_whitespace_model_ids(monkeypatch):
+    monkeypatch.setenv('OPENAI_API_KEY', 'fixture')
+    assert not llm.model_configuration_ready('openai/gpt 4o')
+    with pytest.raises(ValueError, match='whitespace'):
+        llm.get_chat_model('openai/gpt 4o')

@@ -33,6 +33,11 @@ class LLMTimeoutError(LLMError):
     pass
 
 
+class LLMConnectionError(LLMError):
+    """Transient provider connection or server failure."""
+    pass
+
+
 class LLMParseError(LLMError):
     """Failed to parse structured output."""
     pass
@@ -153,30 +158,6 @@ async def close_llm_clients() -> None:
 
 
 # ============================================================================
-# Exceptions
-# ============================================================================
-
-class LLMError(Exception):
-    """Base exception for LLM operations."""
-    pass
-
-
-class LLMRateLimitError(LLMError):
-    """Rate limit exceeded."""
-    pass
-
-
-class LLMTimeoutError(LLMError):
-    """Request timeout."""
-    pass
-
-
-class LLMParseError(LLMError):
-    """Failed to parse structured output."""
-    pass
-
-
-# ============================================================================
 # Helper Functions
 # ============================================================================
 
@@ -236,6 +217,15 @@ def _classify_error(error: Exception) -> Exception:
     Returns:
         Classified exception (may be same or wrapped)
     """
+    from openai import APIConnectionError, APITimeoutError, APIStatusError, RateLimitError
+    if isinstance(error, RateLimitError):
+        return LLMRateLimitError("Model provider rate limited the request")
+    if isinstance(error, (APITimeoutError, asyncio.TimeoutError)):
+        return LLMTimeoutError("Model provider request timed out")
+    if isinstance(error, APIConnectionError) or (isinstance(error, APIStatusError) and error.status_code >= 500):
+        return LLMConnectionError("Model provider temporarily unavailable")
+    if isinstance(error, APIStatusError):
+        return LLMError(f"Model provider rejected the request (HTTP {error.status_code})")
     error_str = str(error).lower()
     error_type = type(error).__name__
     
@@ -249,7 +239,7 @@ def _classify_error(error: Exception) -> Exception:
     
     # Connection errors (retryable)
     if any(indicator in error_str for indicator in ['connection', 'network', 'unavailable']):
-        return LLMError(f"Connection error: {error}")
+        return LLMConnectionError("Model provider connection unavailable")
     
     # Everything else is non-retryable
     return error
