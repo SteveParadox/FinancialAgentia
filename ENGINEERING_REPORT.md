@@ -129,7 +129,10 @@ frontend was introduced.
 ## G. Test evidence
 
 Environment: Python 3.12.14, Bun 1.4.3, Redis 7.0.15 locally. CI targets Python 3.11
-and Redis 7.4; hosted CI results must be checked independently after pushing.
+and Redis 7.4. After publishing PR #9, both hosted workflows failed before any
+job step started. GitHub annotation: "The job was not started because your
+account is locked due to a billing issue." Hosted CI therefore did not execute;
+these local results must not be represented as passing hosted checks.
 
 Commands run from `python-backend` unless specified otherwise:
 
@@ -197,6 +200,7 @@ secured deployment. No deployment, migration on user data, or merge was executed
 
 | Priority | Remaining item | Reason |
 | --- | --- | --- |
+| P0 release gate | Restore GitHub Actions account billing and rerun hosted workflows | Jobs have no runner/steps and the annotation reports an account billing lock; mandatory hosted checks have not passed |
 | P0 release gate | Live provider/model smoke tests using actual credentials and entitlements | Numerical/provider and model correctness cannot be established by fixtures alone |
 | P0 release gate | Build/run Docker stack in deployment environment; TLS, Redis ACL/persistence/backups and identity-token configuration | Required infrastructure and operational guarantees are not available here |
 | P1 | Full point-in-time research with filing publication availability and historical corporate-action policy | Current date validation does not establish historically knowable fundamentals; backtesting remains unsupported |
@@ -213,6 +217,13 @@ explicitly leaving the above acceptance gates open.
 ## K. Git delivery
 
 Implementation branch: `codex/end-to-end-research-hardening`, based on the main
-commit recorded above. Commits and the draft PR are recorded in the delivery
-response after the Git operations succeed. Review the PR's actual hosted checks
-before merging. This report does not claim a merge or production rollout.
+commit recorded above. Published draft PR: https://github.com/SteveParadox/FinancialAgentia/pull/9
+
+- `f41f117ffe86f97e33423a413dc75178da5dcd17`: implementation and regression tests.
+- `9e6efc1d9ea2eab68178024e2bf88fd03070ff68`: operations/validation documentation.
+
+The shell push lacked GitHub credentials. Publication succeeded through the
+connected GitHub account, and the remote trees matched the tested local trees
+exactly (`c56bc884603b6ccec3d45856a0b11940da797c35` before this report addendum).
+This report addendum changes documentation only. Hosted checks remain blocked
+as described above. No merge or production rollout occurred.
