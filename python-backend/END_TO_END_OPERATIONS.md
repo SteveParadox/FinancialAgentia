@@ -1,10 +1,12 @@
+> **Current documentation (2026-10-16):** This file records durable execution internals and compatibility details. The main user entry point is now a **React browser workspace served by FastAPI**, with the older Bun/Ink terminal client remaining optional. For tested command shapes, Windows/Docker startup and P1/P2 features, see [quick start](../docs/getting-started/quick-start.md), [configuration](../docs/installation/configuration.md), [operations](../docs/operations/runbook.md) and [feature guide](../docs/features/user-guide.md). Statements here about older terminal-only architecture are historical descriptions, not current deployment instructions.
+
 # FinancialAgentia execution and operations
 
 ## Supported architecture
 
 ```mermaid
 flowchart TD
-  UI["Bun / React Ink"] --> API["FastAPI: auth and admission"]
+  UI["React browser / optional Bun Ink"] --> API["FastAPI: auth and admission"]
   API --> Redis["Redis: jobs, history, events, leases"]
   Worker["Python worker"] --> Redis
   Worker --> Agent["Python orchestrator"]

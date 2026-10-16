@@ -1,0 +1,17 @@
+# LOCAL DEVELOPMENT ONLY. Never combine this override with public networking.
+# Base Compose binds API only to host loopback 127.0.0.1:8000.
+# Auth is intentionally disabled so the browser can connect with an empty token.
+# Market/model credentials remain required for actual research.
+services:
+  api:
+    environment:
+      BACKEND_ENV: development
+      SECURE_COOKIES: "false"
+      JWT_SECRET: ""
+      BACKEND_API_KEY: ""
+  worker:
+    environment:
+      BACKEND_ENV: development
+      SECURE_COOKIES: "false"
+      JWT_SECRET: ""
+      BACKEND_API_KEY: ""
