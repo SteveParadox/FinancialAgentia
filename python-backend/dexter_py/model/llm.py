@@ -57,6 +57,7 @@ except Exception:
     AsyncCallbackHandler = None
 
 from .openai_client import OpenAIChatClient
+from .groq_client import resolve_groq_base_url
 
 from ..utils._utils import (
     _classify_error,
@@ -91,6 +92,21 @@ def get_chat_model(model_name: str = DEFAULT_MODEL, streaming: bool = False):
     model_name = model_name.strip()
     if any(c.isspace() for c in model_name):
         raise ValueError("Model ID cannot contain whitespace")
+    # Groq is an explicit provider: the nested "openai/" is part of Groq's
+    # actual model identifier (e.g. groq/openai/gpt-oss-120b).
+    if model_name.startswith("groq/"):
+        groq_model = model_name.removeprefix("groq/")
+        if not groq_model or any(char.isspace() for char in groq_model):
+            raise ValueError("Groq model ID must be non-empty and contain no whitespace")
+        api_key = os.getenv("GROQ_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("GROQ_API_KEY not set")
+        # Reject an untrusted endpoint before attaching the provider API key.
+        base_url = resolve_groq_base_url()
+        return OpenAIChatClient(
+            model=groq_model, api_key=api_key,
+            timeout=get_llm_config().timeout, base_url=base_url,
+        )
     explicit_openai = model_name.startswith("openai/")
     if explicit_openai:
         model_name = model_name.removeprefix("openai/")
@@ -140,6 +156,8 @@ def get_chat_model(model_name: str = DEFAULT_MODEL, streaming: bool = False):
 
 
 def model_provider(model: str) -> str:
+    if model.startswith("groq/"):
+        return "groq"
     if model.startswith("openai/") or model.startswith(("gpt-", "o1", "o3", "o4")):
         return "openai"
     if model.startswith("ollama-"):
@@ -155,6 +173,17 @@ def model_configuration_ready(model: str) -> bool:
     """Configuration probe only: no network, no paid calls and no credentials exposed."""
     if not model or any(c.isspace() for c in model):
         return False
+    if model.startswith("groq/"):
+        groq_model = model.removeprefix("groq/")
+        if not groq_model or any(c.isspace() for c in groq_model):
+            return False
+        if not os.getenv("GROQ_API_KEY", "").strip():
+            return False
+        try:
+            resolve_groq_base_url()
+        except ValueError:
+            return False
+        return True
     if model.startswith("ollama-"):
         return ChatOllama is not None and (not (model.endswith("-cloud") or model.startswith("ollama-cloud/")) or bool(os.getenv("OLLAMA_API_KEY")))
     if model.startswith("claude-"):
