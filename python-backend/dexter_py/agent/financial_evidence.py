@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-ALLOWED_PROVIDERS = {"financialdatasets.ai"}
+ALLOWED_PROVIDERS = {"financialdatasets.ai", "sec.gov"}
 CANONICAL_METRICS = {"net_cash_flow_from_operations": "operating_cash_flow"}
 FINANCIAL_VALUES = {
     "price", "close", "open", "high", "low", "volume",
@@ -64,6 +64,8 @@ class FinancialEvidence(BaseModel):
     unit: str | None = None
     currency: str | None = None
     period_end: date | None = None
+    period_start: date | None = None
+    issuer_id: str | None = None
     data_as_of: str | None = None
     evidence_type: str
     calculation_method: str | None = None
@@ -207,7 +209,7 @@ def normalize_tool_evidence(task_results: list[dict]) -> tuple[list[FinancialSou
             return
         url = result.get("source_url")
         parsed = urlparse(url) if isinstance(url, str) else None
-        if not parsed or parsed.scheme != "https" or parsed.hostname != "api.financialdatasets.ai" or parsed.username or parsed.password:
+        if not parsed or parsed.scheme != "https" or parsed.hostname != {"financialdatasets.ai": "api.financialdatasets.ai", "sec.gov": "data.sec.gov"}.get(result.get("provider")) or parsed.username or parsed.password:
             return
         ticker = result.get("ticker")
         if not isinstance(ticker, str) or not re.fullmatch(r"[A-Z0-9.^_-]{1,20}", ticker):
@@ -245,10 +247,13 @@ def normalize_tool_evidence(task_results: list[dict]) -> tuple[list[FinancialSou
                 if period_raw and not _valid_time(period_raw, retrieved):
                     continue
                 if any(row.get(key) and not _valid_time(row[key], retrieved)
-                       for key in ("filing_date", "filing_datetime", "published_at")):
+                       for key in ("filing_date", "filing_datetime", "published_at", "period_start")):
                     continue
                 try:
                     period = date.fromisoformat(period_raw) if period_raw else None
+                    period_start = date.fromisoformat(row["period_start"]) if row.get("period_start") else None
+                    if period_start and (not period or period_start > period):
+                        continue
                 except (ValueError, TypeError):
                     continue  # One malformed fiscal period cannot crash all report validation.
                 observation = row.get("time") or row.get("date") or (period_raw if period_raw else result.get("data_timestamp"))
@@ -271,17 +276,19 @@ def normalize_tool_evidence(task_results: list[dict]) -> tuple[list[FinancialSou
                         continue
                     unit = "fraction" if metric in RATIO_METRICS else "dimensionless" if metric in DIMENSIONLESS_METRICS else "index" if metric == "rsi" else "shares" if metric == "volume" else currency
                     fresh, flags = freshness_label(metric, observation, period, retrieved, row.get("period"))
-                    ev_id = "ev_" + sha256(f"{src_id}:{metric}:{amount}:{period}:{observation}:{derived}".encode()).hexdigest()[:18]
+                    ev_id = "ev_" + sha256(f"{src_id}:{metric}:{amount}:{period}:{row.get('period_start')}:{observation}:{derived}".encode()).hexdigest()[:18]
                     evidence[ev_id] = FinancialEvidence(
                         evidence_id=ev_id, source_id=src_id, symbol=ticker,
                         metric=metric, value=amount, currency=None if metric in RATIO_METRICS | DIMENSIONLESS_METRICS | {"volume", "rsi"} else currency,
-                        unit=unit, period_end=period, data_as_of=str(observation) if observation else None,
+                        unit=unit, period_end=period,
+                        period_start=period_start,
+                        issuer_id=result.get("issuer_id"), data_as_of=str(observation) if observation else None,
                         evidence_type="CALCULATED" if derived else "PROVIDER_REPORTED",
                         calculation_method=method, input_evidence_ids=inputs or [],
                         freshness=fresh, quality_flags=flags,
                         fiscal_period=row.get("fiscal_period") if isinstance(row.get("fiscal_period"), str) else row.get("period") if isinstance(row.get("period"), str) else None,
                         calculation_version="1" if derived else None,
-                        source_field=source_field,
+                        source_field=row.get("source_concept", source_field),
                         filing_date=date.fromisoformat(row["filing_date"]) if isinstance(row.get("filing_date"), str) and len(row["filing_date"]) == 10 else None,
                         source_document_url=row["filing_url"] if isinstance(row.get("filing_url"), str) and row["filing_url"].startswith("https://") else None,
                     )
@@ -355,7 +362,7 @@ def validate_claims(proposed: ProposedClaims, evidence: list[FinancialEvidence])
         if any(ref.currency and matching[0].currency and ref.currency != matching[0].currency for ref in refs):
             rejected.append("Currency mismatch")
             continue
-        if any(ref.period_end and matching[0].period_end and ref.period_end != matching[0].period_end for ref in refs):
+        if any((ref.period_end and matching[0].period_end and ref.period_end != matching[0].period_end) or ref.period_start != matching[0].period_start for ref in refs):
             rejected.append("Fiscal reporting period mismatch")
             continue
         # A validated figure for one symbol cannot be attributed to another.
@@ -396,7 +403,7 @@ def verified_report(execution_id: str, session_id: str,
         limitations = [*limitations, "Evidence record budget reached; coverage is truncated."]
     groups: dict[tuple, set] = {}
     for row in evidence:
-        key = (row.symbol, row.metric, row.period_end, row.data_as_of, row.currency, row.unit)
+        key = (row.symbol, row.metric, row.period_start, row.period_end, row.data_as_of, row.currency, row.unit)
         groups.setdefault(key, set()).add(row.value)
     if any(len(values) > 1 for values in groups.values()):
         limitations = [*limitations, "Conflicting values exist for the same instrument, metric, date and unit. No source was silently preferred."]
@@ -414,7 +421,7 @@ def verified_report(execution_id: str, session_id: str,
         answer = "\n".join(
             f"- {row.symbol} {row.metric}: {row.value} "
             f"({row.currency or row.unit or 'unit unspecified'}; "
-            f"{row.period_end or row.data_as_of or 'date unspecified'}) [{row.evidence_id}]"
+            f"{str(row.period_start) + ' to ' if row.period_start else ''}{row.period_end or row.data_as_of or 'date unspecified'}) [{row.evidence_id}]"
             for row in evidence[:20]
         )
         status = "PARTIAL"

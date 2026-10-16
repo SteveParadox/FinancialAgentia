@@ -345,7 +345,8 @@ class ExecutionRegistry:
                     request_session_id: str | None = "supplied",
                     max_active: int = 5, max_attempts: int = 3,
                     request_options: dict | None = None,
-                    parent_execution_id: str | None = None) -> tuple[str, bool]:
+                    parent_execution_id: str | None = None,
+                    admission_guard: tuple[str, int] | None = None) -> tuple[str, bool]:
         if not 1 <= len(query) <= 10000 or not query.strip():
             raise ValueError("Invalid research query")
         if not 8 <= len(idempotency_key) <= 128:
@@ -370,7 +371,18 @@ class ExecutionRegistry:
                 self.queue, self.prefix + "jobs:" + principal, self.prefix + "admission_rate:" + principal]
         if parent_execution_id:
             keys.append(self._key(parent_execution_id))
-        reply = await self.redis.eval(self._policy(RETRY if parent_execution_id else ADMIT), len(keys), *keys,
+        script = self._policy(RETRY if parent_execution_id else ADMIT)
+        if admission_guard:
+            if parent_execution_id:
+                raise ValueError("Retry cannot use admission guard")
+            guard_key, guard_version = admission_guard
+            if not guard_key.startswith(self.prefix + "platform:v1:schedule:") or type(guard_version) is not int:
+                raise ValueError("Invalid schedule admission guard")
+            keys.append(guard_key)
+            script = ("local raw=redis.call('GET',KEYS[7]); if not raw then return {'CONFLICT',''} end; "
+                      "local guard=cjson.decode(raw); if not guard.data.enabled or guard.version~=" + str(guard_version) +
+                      " then return {'CONFLICT',''} end; " + script)
+        reply = await self.redis.eval(script, len(keys), *keys,
                                       execution_id, principal, session_id,
                                       fingerprint, query, deadline_seconds, model, self.retention_seconds, max_active, max_attempts,
                                       options, parent_execution_id or "")

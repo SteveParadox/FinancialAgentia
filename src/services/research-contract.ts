@@ -13,6 +13,7 @@ const FinancialEvidence = z.object({
   value: z.string().refine(value => value.trim() !== '' && Number.isFinite(Number(value))),
   currency: z.string().nullable(), unit: z.string().nullable(),
   input_evidence_ids: z.array(z.string()), evidence_type: z.string(),
+  period_start: z.string().nullable().optional(), issuer_id: z.string().nullable().optional(),
   period_end: z.string().nullable().optional(), data_as_of: z.string().nullable().optional(),
   calculation_method: z.string().nullable().optional(), calculation_version: z.string().nullable().optional(),
   freshness: z.enum(['historical', 'stale', 'unverified', 'reported_period']).optional(),

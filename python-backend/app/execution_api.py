@@ -74,6 +74,7 @@ class Admission(BaseModel):
     query: str = Field(min_length=1, max_length=10000)
     session_id: str | None = None
     scope: ResearchScope | None = None
+    context_id: uuid.UUID | None = None
 
     @field_validator("query")
     @classmethod
@@ -89,6 +90,11 @@ async def admit(request: Request, body: Admission):
     tools = request.app.state.orchestrator.execute_phase.tool_executor
     if not getattr(tools, "tools", {}):
         raise HTTPException(status_code=503, detail="Financial research tools are not configured")
+    options = body.scope.model_dump(mode="json") if body.scope else {}
+    if body.context_id:
+        from app.platform_store import PlatformStore
+        await PlatformStore(registry).context(principal, str(body.context_id))
+        options["context_id"] = str(body.context_id)
     token = request.headers.get("Idempotency-Key")
     if not token:
         raise HTTPException(status_code=400, detail="Idempotency-Key required")
@@ -98,7 +104,7 @@ async def admit(request: Request, body: Admission):
             principal=principal, session_id=session_id, query=body.query,
             idempotency_key=token,
             model=request.app.state.orchestrator.model,
-            request_options=body.scope.model_dump(mode="json") if body.scope else None,
+            request_options=options,
             request_session_id=body.session_id,
             max_active=int(os.getenv("RESEARCH_MAX_ACTIVE_PER_USER", "5")),
             deadline_seconds=int(os.getenv("AGENT_EXECUTION_DEADLINE_SECONDS", "300")),
