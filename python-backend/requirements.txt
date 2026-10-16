@@ -6,10 +6,10 @@ python-dotenv==1.0.0
 langchain==0.2.11
 langchain-openai==0.1.20
 langchain-ollama==0.1.1
-openai>=1.32.0,<2.0
+openai>=1.109.1,<2.0
 pytest==7.4.0
 # Added for production improvements
-slowapi==0.1.4
+slowapi==0.1.9
 tenacity==8.2.2
 pybreaker==0.7.0
 structlog==23.1.0

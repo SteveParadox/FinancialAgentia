@@ -10,7 +10,8 @@ from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import json
 import re
-from typing import Any
+from typing import Any, Literal
+from .contracts import AgentExecution
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
@@ -22,6 +23,8 @@ FINANCIAL_VALUES = {
     "total_assets", "total_liabilities", "shareholders_equity",
     "total_equity", "earnings_per_share", "market_cap",
     "sma", "rsi", "net_profit_margin", "return_on_period_end_equity",
+    "total_return", "cagr", "annualized_volatility", "max_drawdown", "sharpe_ratio",
+    "operating_cash_flow", "free_cash_flow", "total_debt", "cash_and_equivalents",
 }
 
 
@@ -38,6 +41,11 @@ class FinancialSource(BaseModel):
     data_as_of: str | None = None
     document_type: str | None = None
     accession_number: str | None = None
+    headline: str | None = None
+    symbol: str | None = None
+    publisher: str | None = None
+    cache_status: str = "unspecified"
+    adjustment_status: str = "unspecified"
 
 
 class FinancialEvidence(BaseModel):
@@ -86,12 +94,14 @@ class ProposedClaims(BaseModel):
 class ResearchReport(BaseModel):
     execution_id: str
     session_id: str
-    status: str
+    status: Literal["COMPLETE", "PARTIAL", "INSUFFICIENT_EVIDENCE"]
     answer: str
     claims: list[FinancialClaim] = Field(default_factory=list)
     evidence: list[FinancialEvidence] = Field(default_factory=list)
     sources: list[FinancialSource] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
+    schema_version: Literal[1] = 1
+    agent_executions: list[AgentExecution] = Field(default_factory=list)
     researched_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -107,83 +117,140 @@ def _number(raw: Any) -> Decimal:
     return result
 
 
-def normalize_tool_evidence(task_results: list[dict]) -> tuple[list[FinancialSource], list[FinancialEvidence]]:
-    """Accept known provider-backed records, never fictional tool outputs.
+RATIO_METRICS = {"net_profit_margin", "return_on_period_end_equity", "total_return",
+                 "cagr", "annualized_volatility", "max_drawdown", "sharpe_ratio"}
 
-    Missing source metadata never becomes a verified citation. Input structures
-    and unsupported metrics are rejected instead of speculatively mapped.
+
+def _valid_time(value: Any, retrieved: datetime) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if len(value) == 10:
+            return parsed.date() <= retrieved.date()
+        return parsed.tzinfo is not None and parsed <= retrieved
+    except ValueError:
+        return False
+
+
+def normalize_tool_evidence(task_results: list[dict]) -> tuple[list[FinancialSource], list[FinancialEvidence]]:
+    """Normalize actual tool results, nested statements and derived lineage.
+
+    Unknown timestamps and units stay explicit. Future observations are rejected.
+    Derived records require their original numeric input evidence and a method.
     """
-    sources: list[FinancialSource] = []
-    evidence: list[FinancialEvidence] = []
-    for task in task_results[:50]:
-        for call in task.get("tool_results", [])[:5]:
-            result = call.get("result")
-            if not isinstance(result, dict) or result.get("provider") not in ALLOWED_PROVIDERS:
-                continue
-            url = result.get("source_url")
-            parsed = urlparse(url) if isinstance(url, str) else None
-            if not parsed or parsed.scheme != "https" or parsed.hostname != "api.financialdatasets.ai":
-                continue
-            if call.get("tool") == "calculate_financial_ratios":
-                # Derived metrics need explicit source-input lineage.
-                continue
-            ticker = result.get("ticker")
-            if not isinstance(ticker, str) or not re.fullmatch(r"[A-Z0-9.^_-]{1,20}", ticker):
-                continue
-            try:
-                retrieved = datetime.fromisoformat(result["retrieved_at"])
-                if retrieved.tzinfo is None:
+    sources: dict[str, FinancialSource] = {}
+    evidence: dict[str, FinancialEvidence] = {}
+
+    def consume(result: Any):
+        if not isinstance(result, dict):
+            return
+        if isinstance(result.get("comparison"), list):
+            for child in result["comparison"][:5]:
+                consume(child)
+            return
+        if result.get("provider") not in ALLOWED_PROVIDERS:
+            return
+        url = result.get("source_url")
+        parsed = urlparse(url) if isinstance(url, str) else None
+        if not parsed or parsed.scheme != "https" or parsed.hostname != "api.financialdatasets.ai" or parsed.username or parsed.password:
+            return
+        ticker = result.get("ticker")
+        if not isinstance(ticker, str) or not re.fullmatch(r"[A-Z0-9.^_-]{1,20}", ticker):
+            return
+        try:
+            retrieved = datetime.fromisoformat(result["retrieved_at"].replace("Z", "+00:00"))
+            if retrieved.tzinfo is None or retrieved > datetime.now(timezone.utc):
+                return
+        except (KeyError, ValueError, TypeError, AttributeError):
+            return
+        src_id = "src_" + sha256((ticker + url + retrieved.isoformat()).encode()).hexdigest()[:18]
+        sources[src_id] = FinancialSource(
+            source_id=src_id, provider=result["provider"], source_url=url,
+            retrieved_at=retrieved, data_as_of=result.get("data_timestamp"),
+            cache_status=result.get("cache_status", "unspecified"),
+            adjustment_status=result.get("adjustment_status", "unspecified"),
+        )
+
+        def rows(data):
+            if isinstance(data, list):
+                return data[:100]
+            if isinstance(data, dict):
+                nested = [r for key in ("income_statements", "balance_sheets", "cash_flow_statements")
+                          for r in data.get(key, []) if isinstance(r, dict)]
+                return nested[:100] if nested else [data]
+            return []
+
+        def add_records(data, derived=False, inputs=None):
+            added = []
+            for row in rows(data):
+                if not isinstance(row, dict) or row.get("ticker", ticker) != ticker:
                     continue
-            except (KeyError, ValueError, TypeError):
-                continue
-            src_id = "src_" + sha256((ticker + url + retrieved.isoformat()).encode()).hexdigest()[:18]
-            sources.append(FinancialSource(
-                source_id=src_id, provider=result["provider"], source_url=url,
-                retrieved_at=retrieved, data_as_of=result.get("data_timestamp"),
-            ))
-            data = result.get("data")
-            rows = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
-            for idx, row in enumerate(rows[:100]):
-                if not isinstance(row, dict):
-                    continue
-                if row.get("ticker", ticker) != ticker:
+                period_raw = row.get("report_period") or result.get("report_period")
+                if period_raw and not _valid_time(period_raw, retrieved):
                     continue
                 try:
-                    period = date.fromisoformat(row["report_period"]) if row.get("report_period") else None
-                except ValueError:
+                    period = date.fromisoformat(period_raw) if period_raw else None
+                except (ValueError, TypeError):
+                    continue  # One malformed fiscal period cannot crash all report validation.
+                observation = row.get("time") or row.get("date") or result.get("data_timestamp")
+                if observation and not _valid_time(observation, retrieved):
                     continue
-                currency = row.get("currency") if isinstance(row.get("currency"), str) else None
-                observation_time = row.get("time") or row.get("date") or result.get("data_timestamp")
+                currency = row.get("currency") or result.get("currency")
+                currency = currency if isinstance(currency, str) and re.fullmatch(r"[A-Z]{3}", currency) else None
                 for metric, value in row.items():
-                    if metric == "price" and not observation_time:
-                        # Never certify an un-timestamped quote as a market price.
+                    if metric not in FINANCIAL_VALUES or len(evidence) >= 200:
                         continue
-                    if metric not in FINANCIAL_VALUES:
+                    if metric in {"price", "close", "open", "high", "low", "sma", "rsi"} and not observation:
                         continue
                     try:
                         amount = _number(value)
                     except EvidenceError:
                         continue
-                    entry_id = "ev_" + sha256(
-                        f"{src_id}:{idx}:{metric}:{amount}".encode()
-                    ).hexdigest()[:18]
-                    evidence.append(FinancialEvidence(
-                        evidence_id=entry_id, source_id=src_id, symbol=ticker,
-                        metric=metric, value=amount, currency=currency,
-                        unit=currency if metric != "volume" else "shares",
-                        period_end=period, data_as_of=str(observation_time) if observation_time else None,
-                        evidence_type="PROVIDER_REPORTED",
-                    ))
-                    if len(evidence) >= 200:
-                        break
-                if len(evidence) >= 200:
-                    break
-            if len(evidence) >= 200:
-                break
-        if len(evidence) >= 200:
-            break
-    valid_source_ids = {e.source_id for e in evidence}
-    return [s for s in sources if s.source_id in valid_source_ids], evidence
+                    method = (result.get("calculation_methods") or {}).get(metric) if derived else None
+                    if derived and (not method or not inputs):
+                        continue
+                    unit = "fraction" if metric in RATIO_METRICS else "index" if metric == "rsi" else "shares" if metric == "volume" else currency
+                    ev_id = "ev_" + sha256(f"{src_id}:{metric}:{amount}:{period}:{observation}:{derived}".encode()).hexdigest()[:18]
+                    evidence[ev_id] = FinancialEvidence(
+                        evidence_id=ev_id, source_id=src_id, symbol=ticker,
+                        metric=metric, value=amount, currency=None if metric in RATIO_METRICS or metric in {"volume", "rsi"} else currency,
+                        unit=unit, period_end=period, data_as_of=str(observation) if observation else None,
+                        evidence_type="CALCULATED" if derived else "PROVIDER_REPORTED",
+                        calculation_method=method, input_evidence_ids=inputs or [],
+                    )
+                    added.append(ev_id)
+            return added
+
+        if parsed.path.rstrip("/") == "/news":
+            for row in rows(result.get("data")):
+                if not isinstance(row, dict) or row.get("ticker", ticker) != ticker:
+                    continue
+                title, article_url, published = row.get("title"), row.get("url"), row.get("date")
+                article = urlparse(article_url) if isinstance(article_url, str) else None
+                if not isinstance(title, str) or not title.strip() or not article or article.scheme != "https" or not article.hostname or article.username or article.password:
+                    continue
+                if not _valid_time(published, retrieved):
+                    continue
+                article_id = "news_" + sha256((ticker + article_url.split("?")[0]).encode()).hexdigest()[:18]
+                sources[article_id] = FinancialSource(
+                    source_id=article_id, provider="financialdatasets.ai", source_url=article_url,
+                    retrieved_at=retrieved, data_as_of=published, document_type="THIRD_PARTY_NEWS",
+                    symbol=ticker, publisher=row.get("source") if isinstance(row.get("source"), str) else None,
+                    headline="".join(c for c in title[:500] if ord(c) >= 32 and ord(c) != 127),
+                    cache_status=result.get("cache_status", "unspecified"),
+                )
+        inputs = add_records(result.get("input_records")) if result.get("derived") else []
+        add_records(result.get("data"), derived=bool(result.get("derived")), inputs=inputs)
+
+    for task in task_results[:50]:
+        for call in task.get("tool_results", [])[:5]:
+            if call.get("success") is False:
+                continue
+            consume(call.get("result"))
+    records = list(evidence.values())
+    source_ids = {e.source_id for e in records}
+    return [s for key, s in sources.items() if key in source_ids or s.document_type == "THIRD_PARTY_NEWS"], records
 
 
 def validate_claims(proposed: ProposedClaims, evidence: list[FinancialEvidence]) -> tuple[list[FinancialClaim], list[str]]:
@@ -237,7 +304,12 @@ def validate_claims(proposed: ProposedClaims, evidence: list[FinancialEvidence])
             rejected.append("Numeric assertion differs from cited evidence")
             continue
         accepted.append(FinancialClaim(
-            claim_id=f"claim_{i+1}", statement=candidate.statement,
+            claim_id=f"claim_{i+1}",
+            # Matching numbers cannot certify surrounding model prose. Render
+            # only deterministic facts with their metric, units and timestamp.
+            statement=(f"{matching[0].symbol} {candidate.metric}: {candidate.value} "
+                       f"({matching[0].unit or matching[0].currency or 'unit unspecified'}; "
+                       f"{matching[0].period_end or matching[0].data_as_of or 'date unspecified'})"),
             metric=candidate.metric, value=candidate.value,
             supporting_evidence_ids=candidate.supporting_evidence_ids,
         ))
@@ -264,10 +336,27 @@ def verified_report(execution_id: str, session_id: str,
         )
         status = "PARTIAL"
         limitations = [*limitations, "No validated LLM claims; displaying source-backed metrics only."]
+    elif any(source.headline for source in sources):
+        answer = "Source-reported news headlines are available; no numerical analysis was verified."
+        status = "PARTIAL"
+        limitations = [*limitations, "Headlines are publisher reports, not independently confirmed events or investment conclusions."]
     else:
         answer = "No verified numerical financial evidence was available for this request."
         status = "INSUFFICIENT_EVIDENCE"
         limitations = [*limitations, "No supported provider records were validated."]
+    news = [source for source in sources if source.headline]
+    if news:
+        answer += "\n\nPublisher-reported news:\n" + "\n".join(
+            f"- {source.symbol}: {source.headline} ({source.publisher or 'publisher unspecified'}; {source.data_as_of}) [{source.source_id}]"
+            for source in news[:10]
+        )
+    if limitations:
+        answer += "\n\nLimitations:\n" + "\n".join(f"- {item}" for item in limitations)
+    if sources:
+        answer += "\n\nSources:\n" + "\n".join(
+            f"- {source.source_id}: {source.source_url} (retrieved {source.retrieved_at.isoformat()}; cache {source.cache_status}; adjustments {source.adjustment_status})"
+            for source in sources
+        )
     return ResearchReport(
         execution_id=execution_id, session_id=session_id,
         status=status, answer=answer, sources=sources, evidence=evidence,

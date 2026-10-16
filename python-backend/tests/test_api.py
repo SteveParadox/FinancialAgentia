@@ -205,3 +205,16 @@ def test_query_validation_bounds(client):
                      json={"prompt": ""}).status_code == 422
     assert http.post("/agent/query", headers=auth,
                      json={"query": "X" * 10001}).status_code == 422
+
+
+def test_production_jwt_requires_expiry_and_checks_configured_issuer(client, monkeypatch):
+    from jose import jwt
+    http, _ = client
+    secret = 'testing-secret-with-a-long-unique-value'
+    monkeypatch.setenv('JWT_SECRET', secret)
+    monkeypatch.setenv('BACKEND_ENV', 'production')
+    monkeypatch.setenv('JWT_ISSUER', 'trusted-issuer')
+    no_expiry = jwt.encode({'sub': 'alice', 'iss': 'trusted-issuer'}, secret, algorithm='HS256')
+    wrong_issuer = jwt.encode({'sub': 'alice', 'iss': 'wrong', 'exp': 4102444800}, secret, algorithm='HS256')
+    for token in (no_expiry, wrong_issuer):
+        assert http.get('/agent/history', headers={'Authorization': 'Bearer '+token}).status_code == 401

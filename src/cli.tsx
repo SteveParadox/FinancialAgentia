@@ -22,7 +22,6 @@ import type { Task } from './agent/state.js';
 import type { AgentProgressState } from './components/AgentProgressView.js';
 
 import { useQueryQueue } from './hooks/useQueryQueue.js';
-import { useApiKey } from './hooks/useApiKey.js';
 import { useAgentExecution, ToolError } from './hooks/useAgentExecution.js';
 
 import { getSetting, setSetting } from './utils/config.js';
@@ -34,6 +33,7 @@ import {
 } from './utils/env.js';
 import { MessageHistory } from './utils/message-history.js';
 
+import { listResearchExecutions, getResearchModel } from './services/durable-agent-client.js';
 import { DEFAULT_PROVIDER } from './model/llm.js';
 import { colors } from './theme.js';
 
@@ -132,7 +132,6 @@ export function CLI() {
 
   const messageHistoryRef = useRef<MessageHistory>(new MessageHistory(model));
 
-  const { apiKeyReady } = useApiKey(model);
   const { queue: queryQueue, enqueue, shift: shiftQueue, clear: clearQueue } = useQueryQueue();
 
   const {
@@ -176,11 +175,11 @@ export function CLI() {
    * Wraps processQuery to handle state transitions and errors
    */
   const executeQuery = useCallback(
-    async (query: string) => {
+    async (query: string, resumeId?: string) => {
       const run = ++activeRunRef.current;
       setState('running');
       try {
-        await processQuery(query);
+        await processQuery(query, resumeId);
       } catch (e) {
         if (run !== activeRunRef.current) return;
         if ((e as Error).message?.includes('interrupted')) {
@@ -214,8 +213,28 @@ export function CLI() {
         return;
       }
 
+      if (query === '/history') {
+        void listResearchExecutions().then(items => {
+          setStatusMessage(items.length ? items.map(item =>
+            `${item.execution_id}  ${item.state}  ${item.current_phase || ''}`
+          ).join('\n') + '\nUse /resume <execution ID> to retrieve or follow a report.' : 'No saved research in the retention window.');
+        }).catch(error => setStatusMessage(`History unavailable: ${error}`));
+        return;
+      }
+      if (query.startsWith('/resume ')) {
+        if (state === 'running') {
+          setStatusMessage('Finish or cancel the current research before resuming another.');
+          return;
+        }
+        const id = query.slice(8).trim();
+        void executeQuery(`Resumed research ${id}`, id);
+        return;
+      }
       if (query === '/model') {
-        setStatusMessage('The authoritative agent model is configured on the Python backend using LLM_MODEL.');
+        void getResearchModel().then(info => setStatusMessage(
+          `Backend model: ${info.model} (${info.provider}). ${info.configured ? 'Credentials configured.' : 'Provider credentials or SDK missing.'} ` +
+          'Configure LLM_MODEL and the provider API key on the backend; restart API and workers after changes.'
+        )).catch(error => setStatusMessage(`Model configuration unavailable: ${error}`));
         return;
       }
 

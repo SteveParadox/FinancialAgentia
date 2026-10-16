@@ -31,7 +31,7 @@ from slowapi.errors import RateLimitExceeded
 # Metrics
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 
-from dexter_py.model.llm import call_llm_stream
+from dexter_py.model.llm import call_llm_stream, model_configuration_ready, model_provider
 from dexter_py.utils.session_store import get_session_store
 from dexter_py.agent.orchestrator import Orchestrator
 from dexter_py.agent.tool_executor import ToolExecutor
@@ -155,26 +155,33 @@ async def ready():
     initialized = all(hasattr(state, key) for key in ("session_store", "orchestrator"))
     initialized = initialized and state.orchestrator.execute_phase.tool_executor is not None
     model = state.orchestrator.model if initialized else ""
-    provider_configured = (
-        bool(os.getenv("ANTHROPIC_API_KEY")) if model.startswith("claude-") else
-        bool(os.getenv("GOOGLE_API_KEY")) if model.startswith("gemini-") else
-        bool(os.getenv("OLLAMA_API_KEY")) if model.startswith("ollama-") and model.endswith("-cloud") else
-        True if model.startswith("ollama-") else
-        bool(os.getenv("OPENAI_API_KEY")) if model.startswith(("gpt-", "o1", "o3", "o4")) else
-        False
-    )
+    provider_configured = model_configuration_ready(model)
     tools_registered = (len(state.orchestrator.execute_phase.tool_executor.tools)
                         if initialized and hasattr(state.orchestrator.execute_phase.tool_executor, "tools") else 0)
     shared = getattr(state, "execution_registry", None)
-    shared_ready = bool(shared is not None and await shared.health())
-    ready = bool(initialized and provider_configured and tools_registered and shared_ready)
+    try:
+        shared_ready = bool(shared is not None and await shared.health())
+        workers_ready = bool(shared_ready and await shared.workers_ready())
+    except Exception:
+        shared_ready = False
+        workers_ready = False
+    ready = bool(initialized and provider_configured and tools_registered and shared_ready and workers_ready)
     return JSONResponse(
         {"ready": ready, "agent_initialized": bool(initialized),
          "model_provider_configured": bool(provider_configured),
          "financial_tools_registered": bool(tools_registered),
-         "durable_execution_registry_ready": shared_ready},
+         "durable_execution_registry_ready": shared_ready,
+         "research_workers_ready": workers_ready},
         status_code=200 if ready else 503,
     )
+
+
+@app.get("/api/v1/model")
+async def configured_model(request: Request):
+    await require_auth(request)
+    model = request.app.state.orchestrator.model
+    return {"protocol_version": 1, "provider": model_provider(model), "model": model,
+            "configured": model_configuration_ready(model)}
 
 
 @app.get("/api/v1/tools")
@@ -252,7 +259,11 @@ async def dashboard(request: Request):
                     tbody.innerHTML = '';
                     for (const r of data.recent) {
                         const tr = document.createElement('tr');
-                        tr.innerHTML = `<td>${r.ts_iso || ''}</td><td>${r.path || ''}</td><td>${r.method || ''}</td><td>${r.status || ''}</td><td>${r.request_id || ''}</td><td>${(r.prompt||'').replace(/</g,'&lt;')}</td>`;
+                        for (const field of ['ts_iso', 'path', 'method', 'status', 'request_id']) {
+                            const cell = document.createElement('td');
+                            cell.textContent = String(r[field] ?? '');
+                            tr.appendChild(cell);
+                        }
                         tbody.appendChild(tr);
                     }
                             updateClientChart(data.recent);
@@ -334,7 +345,10 @@ def _verify_jwt(token: str) -> dict:
     if not secret:
         raise RuntimeError("JWT_SECRET not configured")
     try:
-        payload = jwt.decode(token, secret, algorithms=["HS256"])
+        payload = jwt.decode(token, secret, algorithms=["HS256"],
+                             options={"require_exp": os.getenv("BACKEND_ENV", "development").lower() == "production"},
+                             audience=os.getenv("JWT_AUDIENCE") or None,
+                             issuer=os.getenv("JWT_ISSUER") or None)
         return payload
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")

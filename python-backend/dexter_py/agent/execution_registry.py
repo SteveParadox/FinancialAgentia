@@ -6,10 +6,10 @@ process-local fallback in production. Requires durable Redis persistence.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
-import time
 import uuid
 from typing import Any
 
@@ -35,6 +35,9 @@ end
 
 ADMIT = _now() + _emit() + """
 local old=redis.call('GET',KEYS[1])
+if old and old~='CANCELLED' and redis.call('EXISTS',KEYS[2] .. old)==0 then
+  redis.call('DEL',KEYS[1]); old=false
+end
 if old then
   if old=='CANCELLED' then return {'CANCELLED',''} end
   if redis.call('HGET',KEYS[2] .. old,'fingerprint')~=ARGV[4] then
@@ -42,13 +45,25 @@ if old then
   end
   return {'EXISTING',old}
 end
+local recent=redis.call('INCR',KEYS[6])
+if recent==1 then redis.call('EXPIRE',KEYS[6],60) end
+if recent>10 then return {'CAPACITY',''} end
+redis.call('ZREMRANGEBYSCORE',KEYS[5],'-inf',now-86400)
+local active=0
+for _,id in ipairs(redis.call('ZRANGE',KEYS[5],0,-1)) do
+  local state=redis.call('HGET',KEYS[2] .. id,'state')
+  if state=='QUEUED' or state=='RUNNING' or state=='CANCEL_REQUESTED' then active=active+1 end
+end
+if active>=tonumber(ARGV[9]) or redis.call('ZCARD',KEYS[4])>=1000 then return {'CAPACITY',''} end
+redis.call('ZADD',KEYS[5],now,ARGV[1])
+redis.call('EXPIRE',KEYS[5],90000)
 redis.call('HSET', KEYS[2] .. ARGV[1],
   'execution_id', ARGV[1], 'principal', ARGV[2], 'session_id', ARGV[3],
   'fingerprint', ARGV[4], 'query', ARGV[5], 'state', 'QUEUED',
   'created_at', tostring(now), 'updated_at', tostring(now),
   'deadline_at', tostring(now+tonumber(ARGV[6])), 'generation','0',
   'owner','', 'lease_expires_at','0', 'model_version',ARGV[7],
-  'attempt_count','0')
+  'attempt_count','0','protocol_version','1','max_attempts',ARGV[10])
 redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[8]), 'NX')
 redis.call('ZADD', KEYS[4], now, ARGV[1])
 emit(ARGV[1],'QUEUED')
@@ -68,12 +83,20 @@ for _,id in ipairs(ids) do
     emit(id,'CANCELLED')
     redis.call('EXPIRE',k,86400)
     redis.call('EXPIRE',KEYS[3] .. id,86400)
-  elseif state~='QUEUED' and state~='RUNNING' then
+  elseif state~='QUEUED' and state~='RUNNING' and state~='CANCEL_REQUESTED' then
     redis.call('ZREM',KEYS[1],id)
   elseif deadline<=now and (state=='QUEUED' or expires<=now) then
     redis.call('HSET',k,'state','TIMED_OUT','updated_at',tostring(now),'completed_at',tostring(now))
     redis.call('ZREM',KEYS[1],id)
     emit(id,'TIMED_OUT')
+    redis.call('EXPIRE',k,86400)
+    redis.call('EXPIRE',KEYS[3] .. id,86400)
+  elseif (state=='QUEUED' or state=='RUNNING') and expires<=now and
+      tonumber(redis.call('HGET',k,'attempt_count') or '0')>=tonumber(redis.call('HGET',k,'max_attempts') or '3') then
+    redis.call('HSET',k,'state','FAILED','failure_code','ATTEMPTS_EXHAUSTED',
+      'updated_at',tostring(now),'completed_at',tostring(now))
+    redis.call('ZREM',KEYS[1],id)
+    emit(id,'FAILED')
     redis.call('EXPIRE',k,86400)
     redis.call('EXPIRE',KEYS[3] .. id,86400)
   elseif state=='QUEUED' or (state=='RUNNING' and expires<=now) then
@@ -85,8 +108,11 @@ for _,id in ipairs(ids) do
                'lease_expires_at',tostring(now+tonumber(ARGV[2])),
                'updated_at',tostring(now),'started_at',tostring(now))
     redis.call('SET',session_lock,id .. ':' .. tostring(generation),'EX',tonumber(ARGV[2]))
+    redis.call('ZADD',KEYS[1],now+tonumber(ARGV[2]),id)
     emit(id,'RUNNING')
     return {id,tostring(generation)}
+    else
+      redis.call('ZADD',KEYS[1],now+tonumber(ARGV[2]),id)
     end
   end
 end
@@ -106,6 +132,7 @@ if state~='RUNNING' then return 'LOST' end
 local session_lock=KEYS[2] .. redis.call('HGET',k,'principal') .. ':' .. redis.call('HGET',k,'session_id')
 if redis.call('GET',session_lock)~=ARGV[4] then return 'LOST' end
 redis.call('EXPIRE',session_lock,tonumber(ARGV[3]))
+redis.call('ZADD',KEYS[3],now+tonumber(ARGV[3]),ARGV[5])
 redis.call('HSET',k,'lease_expires_at',tostring(now+tonumber(ARGV[3])),
                  'updated_at',tostring(now))
 return 'OK'
@@ -144,7 +171,7 @@ end
 local outcome=ARGV[4]
 if state=='CANCEL_REQUESTED' then outcome='CANCELLED'
 elseif state~='RUNNING' then return 'LOST' end
-if tonumber(redis.call('HGET',k,'deadline_at') or '0')<=now then
+if outcome~='CANCELLED' and tonumber(redis.call('HGET',k,'deadline_at') or '0')<=now then
   outcome='TIMED_OUT'
 end
 if outcome~='SUCCEEDED' and outcome~='FAILED' and
@@ -152,8 +179,12 @@ if outcome~='SUCCEEDED' and outcome~='FAILED' and
 redis.call('HSET',k,'state',outcome,'updated_at',tostring(now),
             'completed_at',tostring(now),'owner','',
             'lease_expires_at','0','failure_code',ARGV[6])
-if outcome=='SUCCEEDED' then
+if (outcome=='SUCCEEDED' or outcome=='FAILED') and ARGV[5]~='{}' then
   redis.call('HSET',k,'result',ARGV[5])
+end
+if outcome=='CANCELLED' then redis.call('HSET',k,'failure_code','EXECUTION_CANCELLED') end
+if outcome=='TIMED_OUT' then redis.call('HSET',k,'failure_code','EXECUTION_TIMED_OUT') end
+if outcome=='SUCCEEDED' then
   redis.call('RPUSH',KEYS[5],ARGV[7])
   redis.call('LTRIM',KEYS[5],-20,-1)
   redis.call('EXPIRE',KEYS[5],tonumber(ARGV[8]))
@@ -221,6 +252,10 @@ class ExecutionConflict(ValueError):
     pass
 
 
+class ExecutionCapacity(ValueError):
+    pass
+
+
 class ExecutionRegistry:
     def __init__(self, client: Redis, *, prefix: str = "financialagentia:"):
         self.redis = client
@@ -237,8 +272,18 @@ class ExecutionRegistry:
         url = os.getenv("REDIS_URL")
         if not url:
             raise RuntimeError("REDIS_URL required for durable financial research execution")
-        return cls(Redis.from_url(url, decode_responses=True),
+        return cls(Redis.from_url(url, decode_responses=True, socket_connect_timeout=3, socket_timeout=5),
                    prefix=os.getenv("EXECUTION_REDIS_PREFIX", "financialagentia:"))
+
+    async def worker_heartbeat(self, worker_id: str):
+        tick = await self.redis.time()
+        await self.redis.zadd(self.prefix + "workers", {worker_id: float(tick[0]) + 30})
+        await self.redis.expire(self.prefix + "workers", 60)
+
+    async def workers_ready(self) -> bool:
+        tick = await self.redis.time()
+        await self.redis.zremrangebyscore(self.prefix + "workers", "-inf", float(tick[0]))
+        return bool(await self.redis.zcard(self.prefix + "workers"))
 
     async def close(self):
         await self.redis.aclose()
@@ -260,7 +305,9 @@ class ExecutionRegistry:
 
     async def admit(self, *, principal: str, session_id: str, query: str,
                     idempotency_key: str, model: str,
-                    deadline_seconds: int = 300) -> tuple[str, bool]:
+                    deadline_seconds: int = 300,
+                    request_session_id: str | None = "supplied",
+                    max_active: int = 5, max_attempts: int = 3) -> tuple[str, bool]:
         if not 1 <= len(query) <= 10000 or not query.strip():
             raise ValueError("Invalid research query")
         if not 8 <= len(idempotency_key) <= 128:
@@ -268,13 +315,21 @@ class ExecutionRegistry:
         if not 1 <= deadline_seconds <= 3600:
             raise ValueError("Invalid execution deadline")
         session_id = str(uuid.UUID(session_id))
-        fingerprint = _sha(json.dumps([session_id, query, model], separators=(",", ":")))
+        if not 1 <= max_active <= 100 or not 1 <= max_attempts <= 10:
+            raise ValueError("Invalid execution limits")
+        # Preserve absence in the request fingerprint, rather than the randomly
+        # generated session. Retries of an admission without a session are identical.
+        fingerprint_session = session_id if request_session_id == "supplied" else request_session_id
+        fingerprint = _sha(json.dumps([fingerprint_session, query, model], separators=(",", ":")))
         existing_key = self.prefix + "idem:" + _sha(principal + ":" + idempotency_key)
         execution_id = str(uuid.uuid4())
-        reply = await self.redis.eval(ADMIT, 4, existing_key,
+        reply = await self.redis.eval(ADMIT, 6, existing_key,
                                       self.execution_prefix, self.events_prefix,
-                                      self.queue, execution_id, principal, session_id,
-                                      fingerprint, query, deadline_seconds, model, 86400)
+                                      self.queue, self.prefix + "jobs:" + principal, self.prefix + "admission_rate:" + principal,
+                                      execution_id, principal, session_id,
+                                      fingerprint, query, deadline_seconds, model, 86400, max_active, max_attempts)
+        if reply[0] == "CAPACITY":
+            raise ExecutionCapacity("Active research limit reached")
         if reply[0] == "CANCELLED":
             raise ExecutionConflict("Execution was cancelled before admission")
         if reply[0] == "CONFLICT":
@@ -289,17 +344,20 @@ class ExecutionRegistry:
             CANCEL_BY_KEY, 4, key, self.execution_prefix,
             self.events_prefix, self.queue, principal)
 
-    async def get(self, execution_id: str, principal: str) -> dict[str, Any] | None:
+    async def get(self, execution_id: str, principal: str, *, include_artifacts: bool = False) -> dict[str, Any] | None:
         result = await self.redis.hgetall(self._key(execution_id))
         if not result or result.get("principal") != principal:
             return None
         safe = {key: value for key, value in result.items()
-                if key not in {"principal", "fingerprint", "query"}}
-        if "result" in safe:
-            safe["result"] = json.loads(safe["result"])
+                if key not in {"principal", "fingerprint", "query"} and (include_artifacts or key != "artifacts")}
+        for key in ("result", "artifacts"):
+            if key in safe:
+                safe[key] = json.loads(safe[key])
         return safe
 
     async def claim(self, worker_id: str, lease_seconds: int = 20) -> tuple[str, int] | None:
+        if not worker_id or type(lease_seconds) is not int or not 1 <= lease_seconds <= 300:
+            raise ValueError("Invalid lease")
         reply = await self.redis.eval(CLAIM, 4, self.queue,
                                       self.execution_prefix, self.events_prefix,
                                       self.session_owner_prefix,
@@ -308,9 +366,9 @@ class ExecutionRegistry:
 
     async def heartbeat(self, execution_id: str, worker_id: str,
                         generation: int, lease_seconds: int = 20) -> str:
-        return await self.redis.eval(HEARTBEAT, 2, self._key(execution_id),
-                                     self.session_owner_prefix, worker_id, generation,
-                                     lease_seconds, execution_id + ":" + str(generation))
+        return await self.redis.eval(HEARTBEAT, 3, self._key(execution_id),
+                                     self.session_owner_prefix, self.queue, worker_id, generation,
+                                     lease_seconds, execution_id + ":" + str(generation), execution_id)
 
     async def cancel(self, execution_id: str, principal: str) -> str:
         return await self.redis.eval(CANCEL, 4, self._key(execution_id),
@@ -348,6 +406,34 @@ class ExecutionRegistry:
         items = await self.redis.lrange(self.history_key(principal, session_id), 0, -1)
         return [json.loads(item) for item in items]
 
+    async def list_jobs(self, principal: str, limit: int = 20, before: float = float("inf")) -> list[dict]:
+        if not 1 <= limit <= 100:
+            raise ValueError("Invalid history limit")
+        ids = await self.redis.zrevrangebyscore(self.prefix + "jobs:" + principal,
+                                               f"({before}" if before != float("inf") else "+inf",
+                                               "-inf", start=0, num=limit)
+        fields = ["execution_id", "session_id", "state", "created_at", "updated_at",
+                  "completed_at", "current_phase", "model_version", "failure_code"]
+        values = await asyncio.gather(*(self.redis.hmget(self._key(id), fields + ["principal"]) for id in ids))
+        return [{key: value for key, value in zip(fields, row) if value is not None}
+                for row in values if row[-1] == principal]
+
+    async def checkpoint(self, execution_id: str, worker_id: str, generation: int,
+                         artifacts: dict) -> str:
+        payload = json.dumps(artifacts, separators=(",", ":"), default=str)
+        if len(payload.encode()) > 1_000_000:
+            raise ValueError("Intermediate research exceeds artifact budget")
+        script = _now() + """
+local k=KEYS[1]
+if redis.call('HGET',k,'owner')~=ARGV[1] or redis.call('HGET',k,'generation')~=ARGV[2]
+   or redis.call('HGET',k,'state')~='RUNNING'
+   or tonumber(redis.call('HGET',k,'lease_expires_at') or '0')<=now then return 'LOST' end
+redis.call('HSET',k,'artifacts',ARGV[3],'updated_at',tostring(now))
+return 'OK'
+"""
+        return await self.redis.eval(script, 1, self._key(execution_id),
+                                     worker_id, generation, payload)
+
     async def event_stream(self, execution_id: str, principal: str, last_id: str = "0-0"):
         """Resume Redis Stream events; the terminal state can also be fetched via get()."""
         if not await self.get(execution_id, principal):
@@ -366,3 +452,4 @@ class ExecutionRegistry:
                 state = await self.get(execution_id, principal)
                 if not state or state.get("state") in TERMINAL:
                     return
+                yield None, {}

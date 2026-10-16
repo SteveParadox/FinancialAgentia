@@ -20,7 +20,7 @@ from tenacity import (
     retry_if_exception_type
 )
 from pydantic import BaseModel, ValidationError
-from ...utils._utils import get_llm_config, get_llm_client
+from ...utils._utils import get_llm_config, get_llm_client, LLMConfig, configure_llm
 
 
 # ============================================================================

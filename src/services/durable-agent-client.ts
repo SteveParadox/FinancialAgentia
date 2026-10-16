@@ -1,3 +1,5 @@
+import { ResearchReportSchema } from "./research-contract.js";
+
 /** Authoritative, idempotent durable financial research transport. */
 export interface ResearchAnswer {
   content: string;
@@ -31,8 +33,24 @@ async function jsonResponse(response: Response): Promise<Record<string, unknown>
   if (!response.ok) throw new Error('Financial agent backend HTTP ' + response.status);
   const size = Number(response.headers.get('content-length') || '0');
   if (size > 512_000) throw new Error('Financial research response too large');
-  const text = await response.text();
-  if (text.length > 512_000) throw new Error('Financial research response too large');
+  if (!response.body) throw new Error('Missing research response body');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let bytes = 0;
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > 512_000) throw new Error('Financial research response too large');
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    text += decoder.decode();
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
   const decoded: unknown = JSON.parse(text);
   if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
     throw new Error('Invalid financial research response');
@@ -75,7 +93,7 @@ export async function executeDurableAgentQuery(
     try {
       const response = await fetch(endpoint('/api/v1/agents/executions'), {
         method: 'POST', headers: { ...headers(), 'Idempotency-Key': idem },
-        signal: joined, body,
+        signal: AbortSignal.any([joined, AbortSignal.timeout(10_000)]), body,
       });
       admitted = await jsonResponse(response);
       break;
@@ -92,6 +110,36 @@ export async function executeDurableAgentQuery(
   const executionId = admitted.execution_id;
   const acceptedSession = admitted.session_id;
   onAdmitted(executionId);
+  return waitForResearchExecution(executionId, joined, onStatus, acceptedSession);
+}
+
+export async function getResearchModel(): Promise<{ model: string; provider: string; configured: boolean }> {
+  const response = await jsonResponse(await fetch(endpoint('/api/v1/model'), {
+    headers: headers(), signal: AbortSignal.timeout(10_000),
+  }));
+  if (response.protocol_version !== 1 || typeof response.model !== 'string' ||
+      typeof response.provider !== 'string' || typeof response.configured !== 'boolean') {
+    throw new Error('Invalid backend model configuration');
+  }
+  return { model: response.model, provider: response.provider, configured: response.configured };
+}
+
+export async function listResearchExecutions(): Promise<Record<string, unknown>[]> {
+  const response = await jsonResponse(await fetch(endpoint('/api/v1/agents/executions'), {
+    headers: headers(), signal: AbortSignal.timeout(10_000),
+  }));
+  if (!Array.isArray(response.executions)) throw new Error('Invalid research history');
+  return response.executions as Record<string, unknown>[];
+}
+
+export async function waitForResearchExecution(
+  executionId: string, signal: AbortSignal,
+  onStatus?: (state: string, phase: string | null) => void,
+  expectedSession?: string,
+): Promise<ResearchAnswer> {
+  if (!UUID.test(executionId)) throw new Error('Invalid execution ID');
+  const joined = AbortSignal.any([signal, AbortSignal.timeout(360_000)]);
+  let acceptedSession = expectedSession;
   const pollUrl = endpoint('/api/v1/agents/executions/' + executionId);
   let failures = 0;
   for (;;) {
@@ -99,7 +147,7 @@ export async function executeDurableAgentQuery(
     let state: Record<string, unknown>;
     try {
       state = await jsonResponse(await fetch(pollUrl, {
-        method: 'GET', headers: headers(), signal: joined,
+        method: 'GET', headers: headers(), signal: AbortSignal.any([joined, AbortSignal.timeout(10_000)]),
       }));
       failures = 0;
     } catch (error) {
@@ -108,9 +156,10 @@ export async function executeDurableAgentQuery(
       continue;
     }
     if (typeof state.state !== 'string' || typeof state.session_id !== 'string' ||
-        state.session_id !== acceptedSession) {
+        !UUID.test(state.session_id) || (acceptedSession && state.session_id !== acceptedSession)) {
       throw new Error('Invalid financial execution status');
     }
+    acceptedSession = state.session_id;
     onStatus?.(state.state, typeof state.current_phase === 'string' ? state.current_phase : null);
     if (TERMINAL.has(state.state)) {
       if (state.state !== 'SUCCEEDED') {
@@ -124,6 +173,10 @@ export async function executeDurableAgentQuery(
       if (typeof parsed.answer !== 'string' || !parsed.answer.trim() ||
           !['COMPLETE', 'PARTIAL', 'INSUFFICIENT_EVIDENCE'].includes(String(parsed.status))) {
         throw new Error('Invalid verified financial report');
+      }
+      const verified = ResearchReportSchema.safeParse(parsed);
+      if (!verified.success || verified.data.execution_id !== executionId || verified.data.session_id !== acceptedSession) {
+        throw new Error('Invalid verified financial report contract');
       }
       return { content: parsed.answer, session_id: acceptedSession,
                execution_id: executionId, report: parsed };
