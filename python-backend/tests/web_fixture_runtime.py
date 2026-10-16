@@ -5,7 +5,7 @@ financial tools, official OpenAI SDK, validation and browser code are genuine.
 """
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
 import json
 import math
 import os
@@ -99,7 +99,7 @@ async def financial_reply(request):
                  'close': round(100 + index*.025 + 3*math.sin(index/17), 6)}
                 for index, day in enumerate(day for day in days if day.weekday() < 5)]
         return httpx.Response(200, json={'prices': rows})
-    return httpx.Response(200, json={'snapshot': {'ticker': ticker, 'price': 300, 'currency': 'USD', 'time': '2026-09-03T20:00:00Z'}})
+    return httpx.Response(200, json={'snapshot': {'ticker': ticker, 'price': 300, 'currency': 'USD', 'time': datetime.now(timezone.utc).isoformat()}})
 
 
 @asynccontextmanager
@@ -126,6 +126,7 @@ async def fixture_lifespan(app):
             tools.tool_signatures[name] = str(signature(function))
         agent = Orchestrator('openai/gpt-4.1', max_iterations=1, tool_executor=tools)
         app.state.orchestrator = agent
+        app.state.financial_provider = provider
         worker = ExecutionWorker(app.state.execution_registry, agent, lease_seconds=5)
         processing = asyncio.create_task(worker.run())
         try:

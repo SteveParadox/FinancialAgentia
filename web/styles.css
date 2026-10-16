@@ -1547,3 +1547,128 @@ textarea::placeholder {
     text-align: center;
   }
 }
+
+/* Financial intelligence modules retain the workspace's existing visual system. */
+.platform-area {
+  display: grid;
+  gap: 1.4rem;
+  min-width: 0;
+}
+.platform-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 1rem;
+}
+.platform-card {
+  background: var(--surface, #fff);
+  border: 1px solid #dce3dd;
+  border-radius: 14px;
+  padding: 1.4rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.platform-card h3 {
+  margin-top: 0;
+}
+.platform-card p,
+.platform-area > p {
+  color: #52625b;
+  line-height: 1.7;
+}
+.platform-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 1rem;
+}
+.platform-form > button {
+  align-self: end;
+}
+.platform-field {
+  display: grid;
+  gap: 0.45rem;
+  flex: 1 1 180px;
+  margin-bottom: 0.7rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  min-width: 0;
+}
+.platform-field input,
+.platform-field select,
+.platform-field textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0.8rem;
+  border: 1px solid #bac8be;
+  border-radius: 8px;
+  color: #183329;
+  background: #fff;
+  font: inherit;
+  min-width: 0;
+}
+.platform-field textarea {
+  min-height: 100px;
+  resize: vertical;
+}
+.platform-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+.platform-notice {
+  padding: 1rem;
+  background: #e4f2e9;
+  border-left: 4px solid #2c7655;
+  overflow-wrap: anywhere;
+}
+.platform-notification {
+  padding: 1rem 0;
+  border-bottom: 1px solid #dce3dd;
+}
+.platform-area .metric-card {
+  padding: 1rem;
+  margin: 1rem 0;
+  background: #f0f5f0;
+  border-radius: 10px;
+  display: grid;
+  gap: 0.8rem;
+}
+.platform-area table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.platform-area th,
+.platform-area td {
+  padding: 0.7rem;
+  border-bottom: 1px solid #dce3dd;
+  text-align: left;
+  max-width: 32rem;
+  overflow-wrap: anywhere;
+}
+.platform-area details {
+  margin: 1rem 0;
+}
+.platform-area summary {
+  cursor: pointer;
+  padding: 0.5rem 0;
+}
+.break-all {
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.preserve-lines {
+  white-space: pre-wrap;
+}
+@media (max-width: 600px) {
+  .platform-card {
+    padding: 1rem;
+  }
+  .platform-form {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+  .platform-form > * {
+    width: 100%;
+  }
+}
