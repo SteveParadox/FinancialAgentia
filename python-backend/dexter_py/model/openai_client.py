@@ -1,4 +1,4 @@
-"""Official OpenAI SDK transport behind the existing agent completion interface.
+"""OpenAI-compatible SDK transport behind the existing agent completion interface.
 
 Owns HTTP resources and disables SDK retries: the shared LLM layer owns retry
 budgets. No Ollama service or LangChain OpenAI adapter is involved.
@@ -23,7 +23,8 @@ def reasoning_model(model: str) -> bool:
 
 class OpenAIChatClient:
     def __init__(self, model: str, api_key: str, *, timeout: float = 120,
-                 http_client: httpx.AsyncClient | None = None):
+                 http_client: httpx.AsyncClient | None = None,
+                 base_url: str = "https://api.openai.com/v1"):
         if not api_key or not api_key.strip():
             raise RuntimeError("OPENAI_API_KEY not set")
         self.model = model
@@ -32,7 +33,7 @@ class OpenAIChatClient:
             follow_redirects=False,
         )
         self.client = AsyncOpenAI(
-            api_key=api_key.strip(), base_url="https://api.openai.com/v1",
+            api_key=api_key.strip(), base_url=base_url,
             timeout=timeout, max_retries=0, http_client=self._http,
         )
 
