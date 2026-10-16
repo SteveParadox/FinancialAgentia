@@ -88,7 +88,10 @@ class Orchestrator:
     async def run(self, query: str, message_history: Optional[Any] = None, *,
                   evidence_collector: Optional[Any] = None,
                   progress_callback: Optional[Any] = None,
-                  checkpoint_callback: Optional[Any] = None) -> str:
+                  checkpoint_callback: Optional[Any] = None,
+                  resume: Optional[dict] = None,
+                  execution_identity: Optional[str] = None,
+                  research_scope: Optional[dict] = None) -> str:
         """Run without mutating shared history; API/service owns persistence."""
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query must be non-empty")
@@ -101,16 +104,49 @@ class Orchestrator:
                 raise TypeError("message_history must implement format_for_planning()")
             history_text = formatter()[-8000:]
         context = ExecutionContext(
-            run_id=str(uuid.uuid4()), query=query, model=self.model,
+            run_id=execution_identity or str(uuid.uuid4()), query=query, model=self.model,
             conversation_context=history_text,
         )
+        if research_scope:
+            import json
+            context.query += "\nValidated research scope (use these instruments and dates): " + json.dumps(research_scope)
         logger.info("orchestrator_start", run_id=context.run_id)
         try:
             if self.execute_phase.tool_executor is None:
                 raise RuntimeError("Tool executor not configured")
-            if progress_callback:
-                await progress_callback("understand")
-            context.understanding = await asyncio.wait_for(self._understand(context), timeout=self.phase_timeouts["understand"])
+            executions = []
+            if resume:
+                if resume.get("schema_version") != 1 or resume.get("model_version") != self.model:
+                    raise ValueError("Incompatible research checkpoint")
+                context.understanding = Understanding.model_validate(resume["understanding"])
+                context.completed_plans = [Plan.model_validate(plan) for plan in resume.get("plans", [])]
+                if len(context.completed_plans) > self.max_iterations:
+                    raise ValueError("Checkpoint exceeds iteration budget")
+                for plan in context.completed_plans:
+                    plan.get_execution_order()
+                    for task in plan.tasks:
+                        if task.status not in {"completed", "failed", "skipped"}:
+                            raise ValueError("Checkpoint has unfinished completed-plan tasks")
+                        if isinstance(task.result, dict) and evidence_collector:
+                            evidence_collector(task.result)
+                        context.task_results[task.id] = task.result
+                executions = [AgentExecution.model_validate(item).model_dump(mode="json")
+                              for item in resume.get("agent_executions", [])]
+                if context.completed_plans:
+                    context.current_plan = context.completed_plans[-1]
+                    context.iteration = len(context.completed_plans)
+                    # Resume at a committed tool boundary; never trust a stale
+                    # reflection to certify work that has not been validated.
+                    if progress_callback:
+                        await progress_callback("reflect")
+                    context.reflection = await asyncio.wait_for(self._reflect(context), timeout=self.phase_timeouts["reflect"])
+                    if (context.reflection.is_complete and context.reflection.confidence >= 0.8
+                            and all(task.status == "completed" for task in context.current_plan.tasks)):
+                        context.stop_reason = StopReason.COMPLETE
+            else:
+                if progress_callback:
+                    await progress_callback("understand")
+                context.understanding = await asyncio.wait_for(self._understand(context), timeout=self.phase_timeouts["understand"])
             async def checkpoint():
                 if checkpoint_callback:
                     await checkpoint_callback({
@@ -121,10 +157,13 @@ class Orchestrator:
                         "reflection": context.reflection.model_dump(mode="json") if context.reflection else None,
                         "stop_reason": context.stop_reason.value if context.stop_reason else None,
                         "agent_executions": executions,
+                        "workflow_execution_id": context.run_id,
                     })
-            executions = []
             await checkpoint()
-            for iteration in range(1, self.max_iterations + 1):
+            start = len(context.completed_plans) + 1
+            for iteration in range(start, self.max_iterations + 1):
+                if context.stop_reason == StopReason.COMPLETE:
+                    break
                 context.iteration = iteration
                 if progress_callback:
                     await progress_callback("plan")
@@ -169,7 +208,7 @@ class Orchestrator:
                 ):
                     context.stop_reason = StopReason.NO_PROGRESS
                     break
-            else:
+            if context.stop_reason is None:
                 context.stop_reason = StopReason.MAX_ITERATIONS
 
             if (context.completed_plans and
@@ -184,7 +223,7 @@ class Orchestrator:
             return await asyncio.wait_for(self._answer(context), timeout=self.phase_timeouts["answer"])
         except Exception:
             context.stop_reason = StopReason.ERROR
-            logger.exception("orchestrator_failed", run_id=context.run_id)
+            logger.error("orchestrator_failed", run_id=context.run_id)
             raise
         finally:
             logger.info(

@@ -178,6 +178,7 @@
           "type": "array"
         },
         "validation_status": {
+          "const": "VERIFIED",
           "default": "VERIFIED",
           "title": "Validation Status",
           "type": "string"
@@ -219,6 +220,18 @@
           "default": null,
           "title": "Calculation Method"
         },
+        "calculation_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Calculation Version"
+        },
         "currency": {
           "anyOf": [
             {
@@ -251,6 +264,42 @@
           "title": "Evidence Type",
           "type": "string"
         },
+        "filing_date": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Filing Date"
+        },
+        "fiscal_period": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fiscal Period"
+        },
+        "freshness": {
+          "default": "unverified",
+          "enum": [
+            "historical",
+            "stale",
+            "unverified",
+            "reported_period"
+          ],
+          "title": "Freshness",
+          "type": "string"
+        },
         "input_evidence_ids": {
           "items": {
             "type": "string"
@@ -274,6 +323,37 @@
           ],
           "default": null,
           "title": "Period End"
+        },
+        "quality_flags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Quality Flags",
+          "type": "array"
+        },
+        "source_document_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Document Url"
+        },
+        "source_field": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Field"
         },
         "source_id": {
           "title": "Source Id",
@@ -367,6 +447,18 @@
           "default": null,
           "title": "Document Type"
         },
+        "exchange": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exchange"
+        },
         "headline": {
           "anyOf": [
             {
@@ -440,6 +532,23 @@
           ],
           "default": null,
           "title": "Symbol"
+        },
+        "timezone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timezone"
+        },
+        "verification_status": {
+          "default": "SINGLE_PROVIDER",
+          "title": "Verification Status",
+          "type": "string"
         }
       },
       "required": [
@@ -487,6 +596,11 @@
       },
       "title": "Limitations",
       "type": "array"
+    },
+    "model_metadata": {
+      "additionalProperties": true,
+      "title": "Model Metadata",
+      "type": "object"
     },
     "researched_at": {
       "format": "date-time",

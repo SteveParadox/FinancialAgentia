@@ -28,7 +28,9 @@ def _emit() -> str:
     return """
 local function emit(execution_id, state)
   redis.call('XADD', KEYS[3] .. execution_id, 'MAXLEN', '~', 200, '*',
-             'state', state, 'execution_id', execution_id)
+             'state', state, 'execution_id', execution_id,
+             'attempt', redis.call('HGET',KEYS[2] .. execution_id,'attempt_count') or '0',
+             'generation', redis.call('HGET',KEYS[2] .. execution_id,'generation') or '0')
 end
 """
 
@@ -64,6 +66,8 @@ redis.call('HSET', KEYS[2] .. ARGV[1],
   'deadline_at', tostring(now+tonumber(ARGV[6])), 'generation','0',
   'owner','', 'lease_expires_at','0', 'model_version',ARGV[7],
   'attempt_count','0','protocol_version','1','max_attempts',ARGV[10])
+redis.call('HSET',KEYS[2] .. ARGV[1],'request_options',ARGV[11],
+  'parent_execution_id',ARGV[12],'configuration_version','2')
 redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[8]), 'NX')
 redis.call('ZADD', KEYS[4], now, ARGV[1])
 emit(ARGV[1],'QUEUED')
@@ -247,6 +251,26 @@ return state or 'NOT_FOUND'
 
 TERMINAL = frozenset({"SUCCEEDED", "CANCELLED", "FAILED", "TIMED_OUT"})
 
+# Source authorization, eligibility, admission and successor linkage share one
+# transaction. Different concurrent retry tokens cannot create two successors.
+RETRY = """
+if redis.call('HGET',KEYS[7],'principal')~=ARGV[2] then return {'NOT_FOUND',''} end
+local state=redis.call('HGET',KEYS[7],'state')
+if state~='FAILED' and state~='TIMED_OUT' then return {'INELIGIBLE',''} end
+local child=redis.call('HGET',KEYS[7],'retry_execution_id')
+if child then
+  if redis.call('GET',KEYS[1])~=child then return {'CONFLICT',child} end
+end
+local function admission()
+""" + ADMIT + """
+end
+local reply=admission()
+if reply[1]=='NEW' or reply[1]=='EXISTING' then
+  redis.call('HSET',KEYS[7],'retry_execution_id',reply[2])
+end
+return reply
+"""
+
 
 class ExecutionConflict(ValueError):
     pass
@@ -256,9 +280,16 @@ class ExecutionCapacity(ValueError):
     pass
 
 
+class RetryIneligible(ValueError):
+    pass
+
+
 class ExecutionRegistry:
     def __init__(self, client: Redis, *, prefix: str = "financialagentia:"):
         self.redis = client
+        self.retention_seconds = int(os.getenv("RESEARCH_RETENTION_SECONDS", "86400"))
+        if not 3600 <= self.retention_seconds <= 31536000:
+            raise ValueError("Research retention must be between one hour and one year")
         if not prefix or any(c in prefix for c in "{} \t\n"):
             raise ValueError("Invalid registry prefix")
         self.prefix = prefix
@@ -266,6 +297,11 @@ class ExecutionRegistry:
         self.events_prefix = prefix + "events:"
         self.queue = prefix + "queue:active"
         self.session_owner_prefix = prefix + "session_owner:"
+
+    def _policy(self, script: str) -> str:
+        # Only validated numeric configuration is substituted. No request text
+        # ever becomes executable Lua. Legacy 24-hour defaults remain unchanged.
+        return script.replace("86400", str(self.retention_seconds)).replace("90000", str(self.retention_seconds + 3600))
 
     @classmethod
     def from_env(cls) -> "ExecutionRegistry":
@@ -307,7 +343,9 @@ class ExecutionRegistry:
                     idempotency_key: str, model: str,
                     deadline_seconds: int = 300,
                     request_session_id: str | None = "supplied",
-                    max_active: int = 5, max_attempts: int = 3) -> tuple[str, bool]:
+                    max_active: int = 5, max_attempts: int = 3,
+                    request_options: dict | None = None,
+                    parent_execution_id: str | None = None) -> tuple[str, bool]:
         if not 1 <= len(query) <= 10000 or not query.strip():
             raise ValueError("Invalid research query")
         if not 8 <= len(idempotency_key) <= 128:
@@ -320,14 +358,26 @@ class ExecutionRegistry:
         # Preserve absence in the request fingerprint, rather than the randomly
         # generated session. Retries of an admission without a session are identical.
         fingerprint_session = session_id if request_session_id == "supplied" else request_session_id
-        fingerprint = _sha(json.dumps([fingerprint_session, query, model], separators=(",", ":")))
+        options = json.dumps(request_options or {}, sort_keys=True, separators=(",", ":"))
+        # Keep legacy fingerprints identical when no new options were supplied.
+        inputs = [fingerprint_session, query, model]
+        if request_options or parent_execution_id:
+            inputs += [options, parent_execution_id]
+        fingerprint = _sha(json.dumps(inputs, separators=(",", ":")))
         existing_key = self.prefix + "idem:" + _sha(principal + ":" + idempotency_key)
         execution_id = str(uuid.uuid4())
-        reply = await self.redis.eval(ADMIT, 6, existing_key,
-                                      self.execution_prefix, self.events_prefix,
-                                      self.queue, self.prefix + "jobs:" + principal, self.prefix + "admission_rate:" + principal,
+        keys = [existing_key, self.execution_prefix, self.events_prefix,
+                self.queue, self.prefix + "jobs:" + principal, self.prefix + "admission_rate:" + principal]
+        if parent_execution_id:
+            keys.append(self._key(parent_execution_id))
+        reply = await self.redis.eval(self._policy(RETRY if parent_execution_id else ADMIT), len(keys), *keys,
                                       execution_id, principal, session_id,
-                                      fingerprint, query, deadline_seconds, model, 86400, max_active, max_attempts)
+                                      fingerprint, query, deadline_seconds, model, self.retention_seconds, max_active, max_attempts,
+                                      options, parent_execution_id or "")
+        if reply[0] == "NOT_FOUND":
+            raise LookupError("Execution not found")
+        if reply[0] == "INELIGIBLE":
+            raise RetryIneligible("Only failed or timed-out executions can be retried")
         if reply[0] == "CAPACITY":
             raise ExecutionCapacity("Active research limit reached")
         if reply[0] == "CANCELLED":
@@ -336,12 +386,22 @@ class ExecutionRegistry:
             raise ExecutionConflict("Idempotency key already used for a different request")
         return reply[1], reply[0] == "NEW"
 
+    async def retry(self, execution_id: str, principal: str, idempotency_key: str,
+                    model: str, **limits) -> tuple[str, bool]:
+        record = await self.get(execution_id, principal)
+        if record is None:
+            raise LookupError("Execution not found")
+        return await self.admit(principal=principal, session_id=record["session_id"],
+                                query=record["query"], model=model, idempotency_key=idempotency_key,
+                                request_options=record.get("request_options", {}),
+                                parent_execution_id=execution_id, **limits)
+
     async def cancel_by_key(self, principal: str, idempotency_key: str) -> str:
         if not 8 <= len(idempotency_key) <= 128:
             raise ValueError("Invalid idempotency key")
         key = self.prefix + "idem:" + _sha(principal + ":" + idempotency_key)
         return await self.redis.eval(
-            CANCEL_BY_KEY, 4, key, self.execution_prefix,
+            self._policy(CANCEL_BY_KEY), 4, key, self.execution_prefix,
             self.events_prefix, self.queue, principal)
 
     async def get(self, execution_id: str, principal: str, *, include_artifacts: bool = False) -> dict[str, Any] | None:
@@ -349,8 +409,8 @@ class ExecutionRegistry:
         if not result or result.get("principal") != principal:
             return None
         safe = {key: value for key, value in result.items()
-                if key not in {"principal", "fingerprint", "query"} and (include_artifacts or key != "artifacts")}
-        for key in ("result", "artifacts"):
+                if key not in {"principal", "fingerprint", "owner"} and (include_artifacts or key != "artifacts")}
+        for key in ("result", "artifacts", "request_options"):
             if key in safe:
                 safe[key] = json.loads(safe[key])
         return safe
@@ -358,7 +418,7 @@ class ExecutionRegistry:
     async def claim(self, worker_id: str, lease_seconds: int = 20) -> tuple[str, int] | None:
         if not worker_id or type(lease_seconds) is not int or not 1 <= lease_seconds <= 300:
             raise ValueError("Invalid lease")
-        reply = await self.redis.eval(CLAIM, 4, self.queue,
+        reply = await self.redis.eval(self._policy(CLAIM), 4, self.queue,
                                       self.execution_prefix, self.events_prefix,
                                       self.session_owner_prefix,
                                       worker_id, lease_seconds)
@@ -371,7 +431,7 @@ class ExecutionRegistry:
                                      lease_seconds, execution_id + ":" + str(generation), execution_id)
 
     async def cancel(self, execution_id: str, principal: str) -> str:
-        return await self.redis.eval(CANCEL, 4, self._key(execution_id),
+        return await self.redis.eval(self._policy(CANCEL), 4, self._key(execution_id),
                                      self.execution_prefix, self.events_prefix,
                                      self.queue, principal, execution_id)
 
@@ -392,7 +452,7 @@ class ExecutionRegistry:
                                      self.queue, key, self.session_owner_prefix,
                                      execution_id, worker_id,
                                      generation, outcome, payload, failure_code,
-                                     turn, 86400)
+                                     turn, self.retention_seconds)
 
     async def publish_phase(self, execution_id: str, worker_id: str,
                             generation: int, phase: str) -> str:
@@ -406,17 +466,38 @@ class ExecutionRegistry:
         items = await self.redis.lrange(self.history_key(principal, session_id), 0, -1)
         return [json.loads(item) for item in items]
 
-    async def list_jobs(self, principal: str, limit: int = 20, before: float = float("inf")) -> list[dict]:
+    async def list_jobs(self, principal: str, limit: int = 20, before: float = float("inf"),
+                        cursor: str | None = None) -> list[dict]:
         if not 1 <= limit <= 100:
             raise ValueError("Invalid history limit")
-        ids = await self.redis.zrevrangebyscore(self.prefix + "jobs:" + principal,
-                                               f"({before}" if before != float("inf") else "+inf",
-                                               "-inf", start=0, num=limit)
-        fields = ["execution_id", "session_id", "state", "created_at", "updated_at",
-                  "completed_at", "current_phase", "model_version", "failure_code"]
-        values = await asyncio.gather(*(self.redis.hmget(self._key(id), fields + ["principal"]) for id in ids))
-        return [{key: value for key, value in zip(fields, row) if value is not None}
-                for row in values if row[-1] == principal]
+        index = self.prefix + "jobs:" + principal
+        offset = 0
+        if cursor:
+            cursor = str(uuid.UUID(cursor))
+            rank = await self.redis.zrevrank(index, cursor)
+            if rank is None:
+                raise ValueError("Invalid history cursor")
+            offset = rank + 1
+        fields = ["execution_id", "session_id", "query", "state", "created_at", "updated_at",
+                  "completed_at", "current_phase", "model_version", "failure_code", "retry_execution_id"]
+        records = []
+        # Lazy removal of expired hashes prevents an empty page from hiding
+        # older, still-retained research. Bounded by the owner index size.
+        while len(records) < limit:
+            if cursor or before == float("inf"):
+                ids = await self.redis.zrevrange(index, offset + len(records), offset + limit - 1)
+            else:
+                ids = await self.redis.zrevrangebyscore(index, f"({before}", "-inf",
+                                                       start=len(records), num=limit-len(records))
+            if not ids:
+                break
+            values = await asyncio.gather(*(self.redis.hmget(self._key(id), fields + ["principal"]) for id in ids))
+            expired = [id for id, row in zip(ids, values) if row[-1] != principal]
+            if expired:
+                await self.redis.zrem(index, *expired)
+            records.extend({key: value for key, value in zip(fields, row) if value is not None}
+                           for row in values if row[-1] == principal)
+        return records
 
     async def checkpoint(self, execution_id: str, worker_id: str, generation: int,
                          artifacts: dict) -> str:

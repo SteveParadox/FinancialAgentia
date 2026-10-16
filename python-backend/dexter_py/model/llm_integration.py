@@ -2,6 +2,7 @@
 """Integration layer between llm.py and agent phases"""
 from typing import Type, TypeVar, Optional, AsyncGenerator, Any
 from .llm import call_llm, call_llm_stream, LLMError, LLMParseError
+from ..utils._utils import get_llm_config
 import structlog
 import json
 
@@ -37,7 +38,7 @@ class StructuredLLMClient:
                     system_prompt=system_prompt,
                     output_model=output_model,
                     temperature=temperature,
-                    max_tokens=4096
+                    max_tokens=get_llm_config().default_max_tokens
                 )
                 
                 if isinstance(result, output_model):

@@ -21,17 +21,17 @@ SYMBOL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.^_-]{0,19}$")
 from .calculations import analyze_prices
 
 PATHS = {
-    "get_price_snapshot": ("/prices/snapshot/", "snapshot"),
-    "get_prices": ("/prices/", "prices"),
-    "get_company_fundamentals": ("/financial-metrics/snapshot/", "snapshot"),
-    "get_company_profile": ("/company/facts/", "company_facts"),
-    "get_financial_metrics": ("/financial-metrics/", "financial_metrics"),
-    "get_income_statements": ("/financials/income-statements/", "income_statements"),
-    "get_balance_sheets": ("/financials/balance-sheets/", "balance_sheets"),
-    "get_cash_flow_statements": ("/financials/cash-flow-statements/", "cash_flow_statements"),
-    "get_all_financial_statements": ("/financials/", "financials"),
-    "get_news": ("/news/", "news"),
-    "get_filings": ("/filings/", "filings"),
+    "get_price_snapshot": ("/prices/snapshot", "snapshot"),
+    "get_prices": ("/prices", "prices"),
+    "get_company_fundamentals": ("/financial-metrics/snapshot", "snapshot"),
+    "get_company_profile": ("/company/facts", "company_facts"),
+    "get_financial_metrics": ("/financial-metrics", "financial_metrics"),
+    "get_income_statements": ("/financials/income-statements", "income_statements"),
+    "get_balance_sheets": ("/financials/balance-sheets", "balance_sheets"),
+    "get_cash_flow_statements": ("/financials/cash-flow-statements", "cash_flow_statements"),
+    "get_all_financial_statements": ("/financials", "financials"),
+    "get_news": ("/news", "news"),
+    "get_filings": ("/filings", "filings"),
 }
 
 class FinancialDataError(RuntimeError):
@@ -110,7 +110,7 @@ def validate_payload(operation: str, payload: Any, ticker: str) -> None:
     for row in rows:
         if row.get("ticker", ticker) != ticker:
             raise FinancialDataError("Provider returned a different ticker")
-        for field in ("time", "date", "report_period", "published_at"):
+        for field in ("time", "date", "report_period", "published_at", "filing_date", "filing_datetime"):
             if row.get(field) is not None:
                 observation_date(row[field])
         if row.get("currency") is not None and not re.fullmatch(r"[A-Z]{3}", str(row["currency"])):
@@ -342,6 +342,20 @@ class FinancialDatasetsClient:
             output["net_profit_margin"] = str(net_income / revenue)
         if net_income is not None and equity is not None and equity > 0:
             output["return_on_period_end_equity"] = str(net_income / equity)
+        methods = {"net_profit_margin": "net_income / revenue",
+                   "return_on_period_end_equity": "net_income / period-end equity"}
+        for name, numerator, numerator_key, denominator, denominator_key in (
+            ("gross_margin", income, "gross_profit", income, "revenue"),
+            ("operating_margin", income, "operating_income", income, "revenue"),
+            ("current_ratio", balance, "current_assets", balance, "current_liabilities"),
+            ("debt_to_equity", balance, "total_debt", balance,
+             "shareholders_equity" if "shareholders_equity" in balance else "total_equity"),
+            ("interest_coverage", income, "operating_income", income, "interest_expense"),
+        ):
+            top, bottom = metric(numerator, numerator_key), metric(denominator, denominator_key)
+            if top is not None and bottom is not None and bottom > 0:
+                output[name] = str(top / bottom)
+                methods[name] = numerator_key + " / " + denominator_key + "; matching currency and report period"
         if not output:
             raise FinancialDataError("No valid inputs for financial ratio calculations")
         return {
@@ -351,8 +365,7 @@ class FinancialDatasetsClient:
             "calculation": "Net income / revenue; net income / period-end equity, where available",
             "data": {**output, "report_period": period_end},
             "input_records": [income, balance], "derived": True,
-            "calculation_methods": {"net_profit_margin": "net_income / revenue",
-                                    "return_on_period_end_equity": "net_income / period-end equity"},
+            "calculation_methods": methods,
         }
 
     async def compare(self, tickers: list[str]):
@@ -404,7 +417,16 @@ class FinancialDatasetsClient:
         rows = sorted(research["data"], key=lambda r: str(r.get("time") or r.get("date")))
         first, last = [observation_date(row.get("time") or row.get("date")) for row in (rows[0], rows[-1])]
         values = analyze_prices([row["close"] for row in rows], elapsed_days=(last-first).days)
+        dates = [observation_date(row.get("time") or row.get("date")) for row in rows]
+        gaps = any((current-previous).days > 4 for previous, current in zip(dates, dates[1:]))
+        if gaps:
+            # A sparse sequence is not a daily return series. Retain observed
+            # endpoint return and drawdown, but do not annualize missing days.
+            values.pop("annualized_volatility", None)
+            values.pop("sharpe_ratio", None)
         return {**research, "data": values, "derived": True, "input_records": [{k: v for k, v in row.items() if k in {"ticker", "time", "date", "currency", "close"}} for row in rows],
+                "completeness": "partial" if gaps else research.get("completeness", "complete"),
+                "data_quality_flags": ["Gaps exceed four calendar days; daily volatility/Sharpe omitted. Exchange holidays not independently verified."] if gaps else [],
                 "currency": rows[-1].get("currency"),
                 "calculation_methods": {key: "Daily closes; 252 trading days/year; sample volatility; zero annual risk-free rate; CAGR actual days/365.25; adjustment unspecified" for key in values},
                 "data_timestamp": str(rows[-1].get("time") or rows[-1].get("date"))}

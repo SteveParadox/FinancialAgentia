@@ -8,9 +8,12 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Request, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from datetime import date, datetime, timezone
+from typing import Literal
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from dexter_py.agent.execution_registry import ExecutionConflict, ExecutionRegistry, ExecutionCapacity, TERMINAL
+from dexter_py.agent.execution_registry import ExecutionConflict, ExecutionRegistry, ExecutionCapacity, RetryIneligible, TERMINAL
+from dexter_py.agent.financial_evidence import ResearchReport
 
 router = APIRouter(prefix="/api/v1/agents/executions", tags=["financial research executions"])
 
@@ -33,9 +36,44 @@ async def registry_and_principal(request: Request) -> tuple[ExecutionRegistry, s
     return registry, registry.principal(identity)
 
 
+class ResearchScope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    category: Literal["company", "comparison", "historical_prices", "general"] = "general"
+    symbols: list[str] = Field(default_factory=list, max_length=5)
+    start_date: date | None = None
+    end_date: date | None = None
+
+    @field_validator("symbols")
+    @classmethod
+    def symbols_valid(cls, value):
+        from dexter_py.tools.financial_datasets import validate_ticker
+        normalized = [validate_ticker(item) for item in value]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("Symbols must be distinct")
+        return normalized
+
+    @model_validator(mode="after")
+    def scope_valid(self):
+        if self.category == "comparison" and len(self.symbols) < 2:
+            raise ValueError("Comparison requires at least two symbols")
+        if self.category == "company" and len(self.symbols) != 1:
+            raise ValueError("Company research requires one symbol")
+        if self.category == "historical_prices" and (not self.symbols or not self.start_date or not self.end_date):
+            raise ValueError("Historical price research requires symbols and dates")
+        if bool(self.start_date) != bool(self.end_date):
+            raise ValueError("Supply both dates")
+        if self.start_date and self.category != "historical_prices":
+            raise ValueError("Dated scope is supported for historical prices only")
+        if self.start_date and not self.start_date < self.end_date <= datetime.now(timezone.utc).date():
+            raise ValueError("Dates must form a past interval")
+        return self
+
+
 class Admission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     query: str = Field(min_length=1, max_length=10000)
     session_id: str | None = None
+    scope: ResearchScope | None = None
 
     @field_validator("query")
     @classmethod
@@ -60,6 +98,7 @@ async def admit(request: Request, body: Admission):
             principal=principal, session_id=session_id, query=body.query,
             idempotency_key=token,
             model=request.app.state.orchestrator.model,
+            request_options=body.scope.model_dump(mode="json") if body.scope else None,
             request_session_id=body.session_id,
             max_active=int(os.getenv("RESEARCH_MAX_ACTIVE_PER_USER", "5")),
             deadline_seconds=int(os.getenv("AGENT_EXECUTION_DEADLINE_SECONDS", "300")),
@@ -78,12 +117,56 @@ async def admit(request: Request, body: Admission):
     }
 
 
+@router.post("/{execution_id}/retry", status_code=202)
+async def retry(execution_id: str, request: Request):
+    registry, principal = await registry_and_principal(request)
+    if not getattr(request.app.state.orchestrator.execute_phase.tool_executor, "tools", {}):
+        raise HTTPException(status_code=503, detail="Financial research tools are not configured")
+    token = request.headers.get("Idempotency-Key")
+    if not token:
+        raise HTTPException(status_code=400, detail="Idempotency-Key required")
+    try:
+        child, created = await registry.retry(
+            execution_id, principal, token, request.app.state.orchestrator.model,
+            max_active=int(os.getenv("RESEARCH_MAX_ACTIVE_PER_USER", "5")),
+            deadline_seconds=int(os.getenv("AGENT_EXECUTION_DEADLINE_SECONDS", "300")))
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    except ExecutionCapacity:
+        raise HTTPException(status_code=429, detail="Active research limit reached", headers={"Retry-After": "10"})
+    except (ExecutionConflict, RetryIneligible):
+        raise HTTPException(status_code=409, detail="Execution cannot be retried or a retry already exists")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid retry parameters")
+    record = await registry.get(child, principal)
+    return {"protocol_version": 1, "execution_id": child, "session_id": record["session_id"],
+            "created": created, "state": record["state"], "parent_execution_id": execution_id}
+
+
+@router.get("/{execution_id}/result", response_model=ResearchReport)
+async def result(execution_id: str, request: Request):
+    registry, principal = await registry_and_principal(request)
+    try:
+        record = await registry.get(execution_id, principal)
+    except ValueError:
+        record = None
+    if record is None:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    if record["state"] not in TERMINAL or not record.get("result"):
+        raise HTTPException(status_code=409, detail="A persisted report is not available")
+    return record["result"]
+
+
 @router.get("")
 async def history(request: Request, limit: int = Query(20, ge=1, le=100),
-                  before: float = Query(float("inf"), gt=0)):
+                  before: float = Query(float("inf"), gt=0), cursor: str | None = None):
     registry, principal = await registry_and_principal(request)
-    records = await registry.list_jobs(principal, limit, before)
+    try:
+        records = await registry.list_jobs(principal, limit, before, cursor)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid history cursor")
     return {"protocol_version": 1, "executions": records,
+            "next_cursor": records[-1]["execution_id"] if len(records) == limit else None,
             "next_before": records[-1]["created_at"] if len(records) == limit else None}
 
 

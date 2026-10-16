@@ -21,6 +21,8 @@ from dexter_py.agent.execution_registry import ExecutionRegistry
 from dexter_py.agent.financial_evidence import (
     ProposedClaims, normalize_tool_evidence, validate_claims, verified_report,
 )
+from redis.exceptions import RedisError
+from dexter_py.model.budget import ModelBudget, ModelBudgetExceeded, current_budget
 
 
 class ModelConfigurationChanged(RuntimeError):
@@ -59,10 +61,10 @@ class ExecutionWorker:
                     execution_id, self.worker_id, generation, self.lease_seconds)
             except Exception:
                 # A shared-state outage cannot grant permission to keep running.
-                job.cancel()
+                job.cancel("WORKER_LEASE_UNCERTAIN")
                 return
             if status != "OK":
-                job.cancel()
+                job.cancel("USER_CANCELLATION" if status == "CANCEL" else "WORKER_LEASE_UNCERTAIN")
                 return
 
     async def _execute(self, execution_id: str, generation: int) -> dict:
@@ -105,12 +107,37 @@ class ExecutionWorker:
                 if status != "OK":
                     raise asyncio.CancelledError
 
+            scope = json.loads(record.get("request_options", "{}"))
+            saved = json.loads(record.get("artifacts", "null"))
             answer = await self.orchestrator.run(
-                record["query"], history,
+                record["query"], history, resume=saved, research_scope=scope,
+                execution_identity=execution_id + ":" + str(generation),
                 evidence_collector=collect, progress_callback=report_phase, checkpoint_callback=checkpoint)
             await report_phase("validate")
             sources, evidence = normalize_tool_evidence(raw_results)
             limitations: list[str] = []
+            if scope.get("symbols"):
+                evidence = [row for row in evidence if row.symbol in scope["symbols"]]
+                missing = set(scope["symbols"]) - {row.symbol for row in evidence}
+                if missing:
+                    limitations.append("No validated numerical coverage for requested instruments: " + ", ".join(sorted(missing)))
+            if scope.get("category") == "historical_prices":
+                # Fundamental filing availability is not represented reliably;
+                # never certify historical statements using today's snapshots.
+                allowed = {"close", "open", "high", "low", "volume", "sma", "rsi",
+                           "total_return", "cagr", "annualized_volatility", "max_drawdown", "sharpe_ratio"}
+                evidence = [row for row in evidence if row.metric in allowed and row.data_as_of
+                            and scope["start_date"] <= row.data_as_of[:10] <= scope["end_date"]]
+                ids = {row.evidence_id for row in evidence}
+                evidence = [row for row in evidence if all(ref in ids for ref in row.input_evidence_ids)]
+                limitations.append("Historical prices only; point-in-time fundamental filings and corporate-action adjustments are not independently verified.")
+            used = {row.source_id for row in evidence}
+            sources = [source for source in sources if source.source_id in used or (
+                source.headline and (not scope.get("symbols") or source.symbol in scope["symbols"])
+                and (scope.get("category") != "historical_prices" or (
+                    source.data_as_of and scope["start_date"] <= source.data_as_of[:10] <= scope["end_date"])))]
+            if any(row.freshness == "unverified" for row in evidence):
+                limitations.append("Snapshot feed delay or observation metadata is unspecified; no figure is certified as live.")
             executions = artifacts.get("agent_executions", [])
             if any(item["status"] != "completed" for item in executions):
                 limitations.append("Some requested research tasks failed or were skipped.")
@@ -165,10 +192,26 @@ class ExecutionWorker:
                            "evidence_references": [row.evidence_id for row in agent_evidence
                                                    if row.evidence_id in {e.evidence_id for e in evidence}]}
                 report.agent_executions.append(AgentExecution.model_validate(summary))
+            budget = current_budget.get()
+            report.model_metadata = {
+                "configured_model": record["model_version"], "attempt": int(record["attempt_count"]),
+                "workflow_execution_id": execution_id + ":" + str(generation),
+                "model_calls_reserved": budget.calls if budget else None,
+                "output_tokens_reserved": budget.reserved_output_tokens if budget else None,
+                "input_characters_reserved": budget.input_characters_reserved if budget else None,
+                "usage_policy": "Reservations are upper bounds, not measured tokens or billed cost. Each recovered attempt has its own bounded budget.",
+            }
             return report.model_dump(mode="json")
 
     async def process(self, execution_id: str, generation: int) -> str:
+        # Task-local accounting also covers nested structured-output repairs and
+        # transport retries. A replacement attempt gets a separately recorded cap.
+        budget = ModelBudget(int(os.getenv("RESEARCH_MAX_MODEL_CALLS", "24")),
+                             int(os.getenv("RESEARCH_MAX_RESERVED_OUTPUT_TOKENS", "98304")),
+                             max_input_characters=int(os.getenv("RESEARCH_MAX_MODEL_INPUT_CHARACTERS", "350000")))
+        token = current_budget.set(budget)
         job = asyncio.create_task(self._execute(execution_id, generation))
+        current_budget.reset(token)
         watcher = asyncio.create_task(self._watch(execution_id, generation, job))
         outcome = "FAILED"
         result = None
@@ -177,11 +220,18 @@ class ExecutionWorker:
             result = await job
             outcome = "FAILED" if result["status"] == "INSUFFICIENT_EVIDENCE" else "SUCCEEDED"
             error = "INSUFFICIENT_EVIDENCE" if outcome == "FAILED" else ""
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
             if asyncio.current_task().cancelling():
                 job.cancel()
                 await asyncio.gather(job, return_exceptions=True)
                 raise  # Worker shutdown leaves the lease recoverable.
+            if exc.args == ("WORKER_LEASE_UNCERTAIN",):
+                # Storage can recover before finish while this lease is still
+                # valid. Do not misclassify a lost heartbeat as user cancellation
+                # and commit CANCELLED. Leave the attempt for fenced recovery.
+                logger.warning("execution_lease_uncertain", execution_id=execution_id,
+                               generation=generation, worker_id=self.worker_id)
+                return "RECOVERABLE"
             # A cancellation may have been requested via another API worker,
             # or a lease may have been lost. Fenced finish rejects stale owners.
             outcome = "CANCELLED"
@@ -189,6 +239,9 @@ class ExecutionWorker:
         except ModelConfigurationChanged:
             outcome = "FAILED"
             error = "MODEL_CONFIGURATION_CHANGED"
+        except ModelBudgetExceeded:
+            outcome = "FAILED"
+            error = "MODEL_BUDGET_EXCEEDED"
         except TimeoutError:
             outcome = "TIMED_OUT"
             error = "EXECUTION_TIMED_OUT"
@@ -209,7 +262,10 @@ class ExecutionWorker:
     async def run(self):
         async def pulse():
             while not self.stopping.is_set():
-                await self.registry.worker_heartbeat(self.worker_id)
+                try:
+                    await self.registry.worker_heartbeat(self.worker_id)
+                except RedisError:
+                    logger.warning("worker_heartbeat_unavailable", worker_id=self.worker_id)
                 await asyncio.sleep(5)
         heartbeat = asyncio.create_task(pulse())
         try:
@@ -217,11 +273,22 @@ class ExecutionWorker:
         finally:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
-            await self.registry.redis.zrem(self.registry.prefix + "workers", self.worker_id)
+            try:
+                await self.registry.redis.zrem(self.registry.prefix + "workers", self.worker_id)
+            except RedisError:
+                pass  # Readiness expires; active leases recover without this cleanup.
 
     async def _run_jobs(self):
         while not self.stopping.is_set():
-            claimed = await self.registry.claim(self.worker_id, self.lease_seconds)
+            try:
+                claimed = await self.registry.claim(self.worker_id, self.lease_seconds)
+            except RedisError:
+                logger.warning("worker_registry_unavailable", worker_id=self.worker_id)
+                try:
+                    await asyncio.wait_for(self.stopping.wait(), timeout=min(5, self.poll_seconds * 4))
+                except TimeoutError:
+                    pass
+                continue
             if not claimed:
                 await asyncio.sleep(self.poll_seconds)
                 continue
@@ -234,7 +301,10 @@ class ExecutionWorker:
                         await asyncio.wait_for(asyncio.shield(processing), timeout=5)
                     except TimeoutError:
                         processing.cancel()
-                await asyncio.gather(processing, return_exceptions=True)
+                outcomes = await asyncio.gather(processing, return_exceptions=True)
+                if isinstance(outcomes[0], Exception):
+                    logger.warning("worker_attempt_interrupted", worker_id=self.worker_id,
+                                   error_category=type(outcomes[0]).__name__)
             finally:
                 stopping.cancel()
                 if not processing.done():

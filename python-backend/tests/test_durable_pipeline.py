@@ -7,7 +7,7 @@ import uuid
 
 import httpx
 import pytest
-from jose import jwt
+import jwt
 
 from app import main
 from app.execution_worker import ExecutionWorker
@@ -78,7 +78,7 @@ async def exercise_setup(callback, mode='success'):
                 return httpx.Response(200, json={'snapshot': None, 'prices': []})
             if mode == 'limited':
                 return httpx.Response(429, headers={'retry-after': '0'})
-            if req.url.path == '/prices/':
+            if req.url.path == '/prices':
                 return httpx.Response(200, json={'prices': [
                     {'ticker': 'AAPL', 'currency': 'USD', 'time': f'2026-09-0{i}T20:00:00Z', 'close': close}
                     for i, close in enumerate([100, 110, 99], 1)
