@@ -128,10 +128,10 @@ def test_groq_streaming_uses_the_same_endpoint(monkeypatch):
              "choices": [{"index": 0, "delta": {"content": " world"},
                           "finish_reason": "stop"}]},
         ]
-        payload = "".join("data: " + json.dumps(frame) + "\\n\\n" for frame in frames)
+        payload = "".join("data: " + json.dumps(frame) + "\n\n" for frame in frames)
         return httpx.Response(
             200, headers={"content-type": "text/event-stream"},
-            text=payload + "data: [DONE]\\n\\n",
+            text=payload + "data: [DONE]\n\n",
         )
     monkeypatch.setenv("GROQ_API_KEY", "fixture-groq-key")
     monkeypatch.setenv("GROQ_BASE_URL", OFFICIAL)
