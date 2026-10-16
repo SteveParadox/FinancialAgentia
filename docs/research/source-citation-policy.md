@@ -1,0 +1,7 @@
+# Citation and verification policy
+
+The model cannot manufacture trusted citations. Source identities are derived from actual allowlisted provider responses, validated HTTPS endpoints, ticker and retrieval timestamp. Numerical evidence has a source ID, observation/reporting date, value, units/currency, freshness and transformation lineage. Original filing date/URL/field names are preserved when provided. News headlines retain publisher, URL and publication date and remain source-reported, not independently confirmed events.
+
+Proposed claims must match an existing metric/value, company, compatible currency and reporting period. Extra numerical assertions, unknown references and mismatches are rejected. Even matching numbers cannot validate arbitrary surrounding prose: accepted text is a deterministic statement of the observed fact. If claim synthesis fails, the report can show source-backed metrics as partial. No critical evidence means `INSUFFICIENT_EVIDENCE`, which fails the job.
+
+Before persistence, Pydantic checks unique identities, source resolution, claim consistency and input lineage. Unknown feed delay, stale data, incomplete research, task failures and conflicting figures are exposed as limitations. Source provenance is not independent corroboration. Browser rendering escapes text, checks external link schemes/credentials, and never renders retrieved HTML. Markdown/JSON exports and print preserve the stored report, dates and warnings.

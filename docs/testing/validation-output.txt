@@ -1,0 +1,112 @@
+Final Python execution
+........................................................................ [ 43%]
+................ssssssssssss............................................ [ 87%]
+.....................                                                    [100%]
+=============================== warnings summary ===============================
+python-backend/dexter_py/agent/schemas.py:21
+  /workspace/scratch/1623c4ca6524/FinancialAgentia/python-backend/dexter_py/agent/schemas.py:21: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class Understanding(BaseModel):
+
+python-backend/dexter_py/agent/schemas.py:65
+  /workspace/scratch/1623c4ca6524/FinancialAgentia/python-backend/dexter_py/agent/schemas.py:65: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class Plan(BaseModel):
+
+python-backend/dexter_py/agent/state.py:21
+  /workspace/scratch/1623c4ca6524/FinancialAgentia/python-backend/dexter_py/agent/state.py:21: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    @validator("taskId")
+
+python-backend/dexter_py/agent/state.py:36
+  /workspace/scratch/1623c4ca6524/FinancialAgentia/python-backend/dexter_py/agent/state.py:36: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    @validator("query")
+
+python-backend/dexter_py/agent/state.py:42
+  /workspace/scratch/1623c4ca6524/FinancialAgentia/python-backend/dexter_py/agent/state.py:42: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    @validator("taskResults", pre=True)
+
+python-backend/dexter_py/agent/state.py:28
+  /workspace/scratch/1623c4ca6524/FinancialAgentia/python-backend/dexter_py/agent/state.py:28: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class AgentState(BaseModel):
+
+tests/test_agent_execution.py: 35 warnings
+tests/test_api.py: 56 warnings
+tests/test_durable_pipeline.py: 79 warnings
+tests/test_financial_datasets.py: 12 warnings
+tests/test_llm.py: 2 warnings
+tests/test_openai_transport.py: 19 warnings
+tests/test_provider_selection.py: 3 warnings
+tests/test_runtime_contract.py: 6 warnings
+tests/test_session_store.py: 1 warning
+tests/test_workspace_reliability.py: 70 warnings
+  /workspace/scratch/1623c4ca6524/venv-web/lib/python3.12/site-packages/structlog/processors.py:480: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    return datetime.datetime.utcnow()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+153 passed, 12 skipped, 289 warnings in 9.05s
+
+
+Final published browser journeys
+
+Running 8 tests using 1 worker
+
+(node:34) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:34) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] /workspace/scratch/1623c4ca6524/venv-web/lib/python3.12/site-packages/jwt/api_jwt.py:370: InsecureKeyLengthWarning: The HMAC key is 22 bytes long, which is below the minimum recommended length of 32 bytes for SHA256. See RFC 7518 Section 3.2.
+[WebServer]   decoded = self.decode_complete(
+[WebServer] /workspace/scratch/1623c4ca6524/venv-web/lib/python3.12/site-packages/jwt/api_jwt.py:370: InsecureKeyLengthWarning: The HMAC key is 22 bytes long, which is below the minimum recommended length of 32 bytes for SHA256. See RFC 7518 Section 3.2.
+[WebServer]   decoded = self.decode_complete(
+  ✓  1 tests/browser/workspace.e2e.ts:44:1 › company analysis persists through refresh; citations, calculations and JSON export match the saved report (3.9s)
+  ✓  2 tests/browser/workspace.e2e.ts:103:1 › comparison covers MSFT, AAPL and GOOGL without conflating instruments or units (816ms)
+  ✓  3 tests/browser/workspace.e2e.ts:136:1 › five-year historical prices retain full calculation lineage and independently correct returns (1.4s)
+  ✓  4 tests/browser/workspace.e2e.ts:169:1 › cancellation stops a running job and preserves terminal state after reconnect (634ms)
+  ✓  5 tests/browser/workspace.e2e.ts:197:1 › provider outage is visible and retry creates a linked job instead of overwriting failure (922ms)
+  ✓  6 tests/browser/workspace.e2e.ts:226:1 › disconnecting progress transport recovers via persisted snapshots; mobile remains usable (3.8s)
+  ✓  7 tests/browser/workspace.e2e.ts:253:1 › multi-user isolation protects report, stream, status, cancellation and retry (1.3s)
+  ✓  8 tests/browser/workspace.e2e.ts:286:1 › invalid credentials are rejected and untrusted request text is escaped (1.1s)
+
+  8 passed (16.0s)
+
+
+JavaScript dependency audit
+bun audit v1.4.3 (c6da4a4d3)
+
+No vulnerabilities found (checked 79 packages) [5.20s]
+
+
+Clean Python environment dependency audit
+No known vulnerabilities found
+
+
+Clean HTTP startup
+{'/health': 200, '/': 200, '/ready': 503, '/api/v1/model': 200}
+Missing provider credentials correctly prevent readiness.
+
+
+Hosted CI (code commit c9535d60ff3c44226899c28ccfcd6d2c6555acee)
+[
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/SteveParadox/FinancialAgentia/blob/c9535d60ff3c44226899c28ccfcd6d2c6555acee/.github",
+    "start_line": 1,
+    "start_column": null,
+    "end_line": 1,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "",
+    "message": "The job was not started because your account is locked due to a billing issue.",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/SteveParadox/FinancialAgentia/blob/c9535d60ff3c44226899c28ccfcd6d2c6555acee/.github",
+    "start_line": 1,
+    "start_column": null,
+    "end_line": 1,
+    "end_column": null,
+    "annotation_level": "notice",
+    "title": "",
+    "message": "\"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"",
+    "raw_details": ""
+  }
+]

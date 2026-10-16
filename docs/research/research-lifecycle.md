@@ -1,0 +1,7 @@
+# Research lifecycle
+
+The browser authenticates using a supplied HS256 JWT, submits a question with optional validated scope, receives a job ID and stores that ID in its URL. Redis persists the question before execution. The worker understands the request, creates a DAG, invokes registered tools, reflects, drafts an answer and validates evidence. Only source-matched numerical claims or deterministic evidence summaries enter the saved report. Unvalidated draft prose is discarded.
+
+Supported workspace categories: single company, comparison (2–5 distinct symbols), historical prices with an explicit past date range, and general financial research. Unsupported valuations or qualitative sections are not filled with example text. Missing instruments, failed tasks, incomplete pagination, stale records, absent currency/adjustments and missing claim coverage make limitations visible. Historical price mode excludes current snapshots and fundamentals, filters the interval and checks remaining calculation lineage. It does not certify historical fundamental backtests.
+
+Authenticated fetch-based SSE supports headers and persisted replay; a 2.5-second polling fallback obtains authoritative snapshots. Reconnection uses Redis event IDs. Neither client events nor model prose can mark a job complete before its fenced result is committed. Disconnecting the browser never cancels research. Re-enter the token after refresh, then the URL restores the saved job. History is always server backed. Multiple tabs independently observe the same durable state.

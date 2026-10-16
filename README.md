@@ -1,3 +1,5 @@
+> **Web workspace and durable runtime:** see [local startup](docs/deployment/environment-configuration.md), [architecture](docs/architecture/target-architecture.md), [validation](docs/testing/end-to-end-validation.md), and [current implementation report](docs/implementation-report.md). Build with `bun run build:web`, then run the FastAPI API and a separate Python worker with persistent Redis. OpenAI and Ollama are both supported. Production release gates remain explicit. The older terminal documentation below is retained for compatibility.
+
 > **Current execution guide:** [Python backend setup](python-backend/README.md) and [end-to-end operations](python-backend/END_TO_END_OPERATIONS.md). Research now runs on the Python durable worker; the Bun/Ink client requires that backend. Older local-agent setup sections below describe earlier versions.
 
 # FinancialAgentia
