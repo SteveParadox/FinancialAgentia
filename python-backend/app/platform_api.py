@@ -578,7 +578,7 @@ async def create_workspace(request: Request, body: Named):
         {"name": body.name, "members": {actor: "owner"}, "publications": []},
     )
     await store.redis.zadd(store.prefix + "memberships:" + actor, {record["id"]: now()})
-    await store.redis.expire(store.prefix + "memberships:" + actor, store.retention)
+    await store.redis.persist(store.prefix + "memberships:" + actor)
     return record
 
 
@@ -768,7 +768,7 @@ async def edit_publication(store, actor, identity, version, change):
                 }
             )
             pipe.multi()
-            pipe.set(key, json.dumps(pub), ex=max(1, int(pub["expires_at"] - now())))
+            pipe.set(key, json.dumps(pub), keepttl=True)
             await pipe.execute()
             return pub
         except WatchError:

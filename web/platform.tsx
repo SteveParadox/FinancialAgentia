@@ -13,7 +13,7 @@ const Document = z.object({
   version: z.number().int().positive(),
   created_at: z.number(),
   updated_at: z.number(),
-  expires_at: z.number(),
+  expires_at: z.number().nullable(),
   data: z.record(z.string(), z.unknown()),
 });
 type Doc = z.infer<typeof Document>;

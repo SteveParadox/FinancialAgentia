@@ -30,6 +30,7 @@ KINDS = {
 }
 EDITOR = {"owner", "admin", "editor"}
 ADMIN = {"owner", "admin"}
+EXPIRING_KINDS = {"memory", "notification", "invitation"}
 
 
 def now():
@@ -87,6 +88,7 @@ class PlatformStore:
 
     async def create(self, kind, actor, data, identity=None):
         identity = safe_id(identity) if identity else str(uuid.uuid4())
+        ttl = self.retention if kind in EXPIRING_KINDS else 0
         record = {
             "schema_version": 1,
             "id": identity,
@@ -94,7 +96,7 @@ class PlatformStore:
             "version": 1,
             "created_at": now(),
             "updated_at": now(),
-            "expires_at": now() + self.retention,
+            "expires_at": now() + ttl if ttl else None,
             "data": data,
         }
         if len(json.dumps(record)) > 2_000_000:
@@ -109,8 +111,15 @@ end
 local size=redis.call('ZCARD',KEYS[2])
 if redis.call('EXISTS',KEYS[1])==1 then return 'EXISTS' end
 local cap=tonumber(ARGV[7]); if size>=cap then return 'CAPACITY' end
-redis.call('SET',KEYS[1],ARGV[1],'EX',ARGV[2])
-redis.call('ZADD',KEYS[2],ARGV[3],ARGV[4]); redis.call('EXPIRE',KEYS[2],ARGV[2])
+local existed=redis.call('EXISTS',KEYS[2])
+local ttl=tonumber(ARGV[2])
+if ttl>0 then redis.call('SET',KEYS[1],ARGV[1],'EX',ttl)
+else redis.call('SET',KEYS[1],ARGV[1]) end
+redis.call('ZADD',KEYS[2],ARGV[3],ARGV[4])
+if ttl==0 then redis.call('PERSIST',KEYS[2])
+elseif existed==0 or (redis.call('TTL',KEYS[2])>=0 and redis.call('TTL',KEYS[2])<ttl) then
+ redis.call('EXPIRE',KEYS[2],ttl)
+end
 if ARGV[5]=='1' then redis.call('ZADD',KEYS[3],ARGV[3],ARGV[6]) end
 return 'OK'
 """
@@ -121,7 +130,7 @@ return 'OK'
             index,
             self.prefix + "due",
             json.dumps(record),
-            self.retention,
+            ttl,
             record["created_at"],
             identity,
             "1" if kind in {"alert", "schedule"} else "0",
@@ -166,9 +175,8 @@ return 'OK'
                 edited["updated_at"] = now()
                 if len(json.dumps(edited)) > 2_000_000:
                     raise HTTPException(413, "Record exceeds 2 MB limit")
-                remaining = max(1, int(record["expires_at"] - now()))
                 pipe.multi()
-                pipe.set(key, json.dumps(edited), ex=remaining)
+                pipe.set(key, json.dumps(edited), keepttl=True)
                 pipe.xadd(
                     self.prefix + "audit:" + record["owner"],
                     {
@@ -288,17 +296,17 @@ return 'OK'
                 pipe.set(
                     workspace_key,
                     json.dumps(workspace),
-                    ex=max(1, int(workspace["expires_at"] - now())),
+                    keepttl=True,
                 )
                 pipe.set(
                     invite_key,
                     json.dumps(invite),
-                    ex=max(1, int(invite["expires_at"] - now())),
+                    keepttl=True,
                 )
                 pipe.zadd(
                     self.prefix + "memberships:" + actor, {workspace["id"]: now()}
                 )
-                pipe.expire(self.prefix + "memberships:" + actor, self.retention)
+                pipe.persist(self.prefix + "memberships:" + actor)
                 await pipe.execute()
                 return workspace
             except WatchError:

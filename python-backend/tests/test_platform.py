@@ -1163,3 +1163,41 @@ def test_fiscal_period_prices_cannot_become_current_valuations_or_price_alerts(
             )
 
     run(exercise_setup(scenario))
+
+
+def test_memory_expiry_cannot_expire_portfolios_workspaces_schedules_or_owner_indexes(
+    configured,
+):
+    async def scenario(api, worker, requests):
+        store = PlatformStore(worker.registry)
+        owner = worker.registry.principal("jwt::alice")
+        for kind in ["portfolio", "workspace", "publication", "alert", "schedule"]:
+            data = {"name": "Long lived"}
+            if kind in {"alert", "schedule"}:
+                data.update(enabled=True, next_due=now() + 3600)
+            record = await store.create(kind, owner, data)
+            assert record["expires_at"] is None
+            assert await store.redis.ttl(store.key(kind, record["id"])) == -1
+            assert await store.redis.ttl(store.index(kind, owner)) == -1
+            changed = await store.mutate(
+                kind,
+                record["id"],
+                owner,
+                1,
+                lambda data: data.update(name="Still durable"),
+            )
+            assert (
+                changed["version"] == 2
+                and await store.redis.ttl(store.key(kind, record["id"])) == -1
+            )
+        memory = await store.create("memory", owner, {"label": "Expiring context"})
+        ttl = await store.redis.ttl(store.key("memory", memory["id"]))
+        assert ttl > 3600
+        store.retention = 3600
+        await store.create("memory", owner, {"label": "Shorter new context"})
+        assert await store.redis.ttl(store.index("memory", owner)) >= ttl - 1
+        assert (await store.raw("memory", memory["id"]))["expires_at"] == memory[
+            "expires_at"
+        ]
+
+    run(exercise_setup(scenario))

@@ -255,7 +255,7 @@ class MonitoringService:
                 pipe.set(
                     key,
                     json.dumps(current),
-                    ex=max(1, int(record["expires_at"] - now())),
+                    keepttl=True,
                 )
                 if oldest:
                     pipe.delete(*(store.key("notification", old) for old in oldest))
