@@ -12,7 +12,8 @@ services:
       retries: 12
   api:
     build:
-      context: ./python-backend
+      context: .
+      dockerfile: python-backend/Dockerfile
     env_file:
       - path: ./python-backend/.env
         required: true
@@ -22,12 +23,19 @@ services:
       REDIS_URL: redis://redis:6379/0
     ports:
       - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     depends_on:
       redis:
         condition: service_healthy
   worker:
     build:
-      context: ./python-backend
+      context: .
+      dockerfile: python-backend/Dockerfile
     command: ["python", "-m", "app.execution_worker"]
     env_file:
       - path: ./python-backend/.env
