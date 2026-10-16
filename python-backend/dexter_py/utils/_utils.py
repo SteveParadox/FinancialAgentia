@@ -110,14 +110,10 @@ try:
 except Exception:
     ChatOpenAI = None
 
-try:
-    from langchain_ollama import ChatOllama
-except Exception:
-    ChatOllama = None
 
 # Optional LangChain async callback handler (used for streaming tokens)
 try:
-    from langchain.callbacks.base import AsyncCallbackHandler
+    from langchain_core.callbacks import AsyncCallbackHandler
 except Exception:
     AsyncCallbackHandler = None
 

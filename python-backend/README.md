@@ -1,3 +1,5 @@
+> Current setup, web workspace, dependency/security changes and deployment instructions: [environment configuration](../docs/deployment/environment-configuration.md), [worker deployment](../docs/deployment/worker-deployment.md), and [implementation report](../docs/implementation-report.md). Build the combined Docker image from the repository root using `docker build -f python-backend/Dockerfile .`.
+
 # FinancialAgentia Python backend
 
 The supported research path is the Bun/Ink terminal frontend → versioned FastAPI

@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"]
+  },
+  "include": [
+    "web/**/*.ts",
+    "web/**/*.tsx",
+    "scripts/build-web.ts",
+    "tests/browser/**/*.ts",
+    "playwright.config.ts",
+    "src/services/research-contract.ts"
+  ]
+}

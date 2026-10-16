@@ -163,7 +163,7 @@ def test_agent_stream_error_does_not_commit_history(client):
 
 def test_jwt_subject_isolation(client, monkeypatch):
     """One authenticated user cannot fetch or clear another user's history."""
-    from jose import jwt
+    import jwt
 
     http, _ = client
     secret = "testing-secret-with-a-long-unique-value"
@@ -208,7 +208,7 @@ def test_query_validation_bounds(client):
 
 
 def test_production_jwt_requires_expiry_and_checks_configured_issuer(client, monkeypatch):
-    from jose import jwt
+    import jwt
     http, _ = client
     secret = 'testing-secret-with-a-long-unique-value'
     monkeypatch.setenv('JWT_SECRET', secret)

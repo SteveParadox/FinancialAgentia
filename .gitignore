@@ -8,3 +8,5 @@ __pycache__/
 !.env.example
 .venv/
 .dexter/
+playwright-report/
+test-results/

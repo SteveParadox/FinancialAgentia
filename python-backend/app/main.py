@@ -51,6 +51,13 @@ structlog.configure(
 logger = structlog.get_logger("dexter_backend")
 
 
+def configured_integer(name: str, default: int, minimum: int, maximum: int) -> int:
+    value = int(os.getenv(name, str(default)))
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Construct dependencies once, fail visibly, clean up when stopped."""
@@ -60,6 +67,22 @@ async def lifespan(application: FastAPI):
             raise RuntimeError("Production backend requires JWT_SECRET or BACKEND_API_KEY")
         if os.getenv("SECURE_COOKIES", "false").lower() != "true":
             raise RuntimeError("Production requires SECURE_COOKIES=true")
+    model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    iterations = configured_integer("AGENT_MAX_ITERATIONS", 3, 1, 10)
+    for name, default, low, high in (
+        ("RESEARCH_MAX_MODEL_CALLS", 24, 1, 100),
+        ("RESEARCH_MAX_RESERVED_OUTPUT_TOKENS", 98304, 512, 409600),
+        ("RESEARCH_MAX_MODEL_INPUT_CHARACTERS", 350000, 1000, 2000000),
+        ("MARKET_SNAPSHOT_MAX_AGE_SECONDS", 345600, 1, 2592000),
+        ("FINANCIAL_STATEMENT_MAX_AGE_DAYS", 550, 1, 3660),
+        ("RESEARCH_MAX_ACTIVE_PER_USER", 5, 1, 100),
+        ("AGENT_EXECUTION_DEADLINE_SECONDS", 300, 1, 3600),
+    ):
+        configured_integer(name, default, low, high)
+    configure_llm(LLMConfig(default_model=model,
+        timeout=configured_integer("LLM_TIMEOUT_SECONDS", 60, 1, 300),
+        retry_attempts=configured_integer("LLM_MAX_RETRIES", 3, 1, 5),
+        default_max_tokens=configured_integer("LLM_MAX_OUTPUT_TOKENS", 4096, 128, 16384)))
     application.state.recent_requests = deque(maxlen=1000)
     application.state.session_locks = WeakValueDictionary()
     application.state.session_store = get_session_store()
@@ -71,9 +94,6 @@ async def lifespan(application: FastAPI):
         application.state.execution_registry = shared
     elif os.getenv("BACKEND_ENV", "development").lower() == "production":
         raise RuntimeError("Production financial research requires REDIS_URL")
-    model = os.getenv("LLM_MODEL", "gpt-4o-mini")
-    iterations = int(os.getenv("AGENT_MAX_ITERATIONS", "3"))
-    configure_llm(LLMConfig(default_model=model))
     # Real tools are registered explicitly; the Python scaffold has no
     # production financial feed. Never register demonstration prices here.
     tools = ToolExecutor()
@@ -339,18 +359,19 @@ def _verify_jwt(token: str) -> dict:
 
     If `JWT_SECRET` is not set, this function will raise a RuntimeError.
     """
-    from jose import jwt, JWTError
+    import jwt
+    from jwt.exceptions import InvalidTokenError
 
     secret = os.getenv("JWT_SECRET")
     if not secret:
         raise RuntimeError("JWT_SECRET not configured")
     try:
         payload = jwt.decode(token, secret, algorithms=["HS256"],
-                             options={"require_exp": os.getenv("BACKEND_ENV", "development").lower() == "production"},
+                             options={"require": ["exp"] if os.getenv("BACKEND_ENV", "development").lower() == "production" else []},
                              audience=os.getenv("JWT_AUDIENCE") or None,
                              issuer=os.getenv("JWT_ISSUER") or None)
         return payload
-    except JWTError:
+    except InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
@@ -477,7 +498,7 @@ async def query(request: Request, q: Query):
                 logger.debug("streamed_token", token_length=len(chunk), request_id=request_id)
                 yield s.encode("utf-8")
         except Exception as e:
-            logger.exception("Error during LLM streaming", error=str(e))
+            logger.error("llm_streaming_failed", error_category=type(e).__name__)
             err_payload = {"error": "LLM request failed", "request_id": request_id}
             err = f"data: {json.dumps(err_payload)}\n\n"
             yield err.encode("utf-8")
@@ -574,7 +595,7 @@ async def agent_query(request: Request, q: AgentQuery):
             yield s.encode("utf-8")
             
         except Exception as e:
-            logger.exception("Error during agent query", error=str(e), session_id=session_id)
+            logger.error("legacy_agent_query_failed", error_category=type(e).__name__, session_id=session_id)
             err_payload = {
                 "type": "error",
                 "error": "Agent execution failed",
@@ -727,3 +748,15 @@ async def create_session(request: Request):
 # Mount after require_auth is defined; single durable API, shared execution registry.
 from app.execution_api import router as execution_router
 app.include_router(execution_router)
+
+# Browser and terminal clients share the same authenticated durable endpoints.
+from app.workspace import router as workspace_router
+app.include_router(workspace_router)
+
+from redis.exceptions import RedisError
+
+@app.exception_handler(RedisError)
+async def shared_state_unavailable(request: Request, exc: RedisError):
+    logger.warning("shared_state_unavailable", error_category=type(exc).__name__)
+    return JSONResponse(status_code=503, content={"detail": "Research storage is temporarily unavailable. Retry shortly."},
+                        headers={"Retry-After": "3"})

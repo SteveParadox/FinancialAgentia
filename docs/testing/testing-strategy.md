@@ -1,0 +1,9 @@
+# Testing strategy
+
+Use the production architecture with deterministic fixtures only at external boundaries. Unit tests cover arithmetic reference cases, schemas, malformed inputs/claims and provider mapping. Integration tests use real Redis Lua, streams, session locks and concurrent workers; fake in-memory ownership is insufficient. A real socket/Bun/Ink test verifies terminal compatibility. Browser tests drive the compiled React workspace through HTTP, Redis, a worker, the actual orchestrator, official OpenAI SDK transport and financial adapter with deterministic upstream HTTP replies.
+
+The test fixture servers are under `python-backend/tests`; neither is imported by production startup. Browser fixtures use explicitly synthetic records and a fixture JWT secret. They do not represent current Microsoft/Apple/Alphabet/NVIDIA financial facts. Tests assert report values/side effects, original input lineage, persistence, permissions and cancellation, not only HTTP 200. A five-year fixture retains over 1,200 daily close inputs and independently recomputes endpoint return in JavaScript.
+
+Default provider CI never needs paid credentials. Twelve existing live Financial Datasets tests remain opted-in. Live model smoke uses `scripts/check_model_connection.py --live`; do not run it without an explicitly configured credential and acceptance of a possible provider charge. Keep fixture and live test evidence separate.
+
+The project uses Bun tests and Playwright, not Jest. Unused inherited Jest/Babel packages and the unreferenced LangChain community package were removed for security; no tests or assertions were deleted. Playwright files use `.e2e.ts` so `bun test` does not misinterpret them. Upstream compatibility upgrades require the same full suite, browser tests and frozen-lock build to pass.

@@ -1,3 +1,5 @@
+> Historical report for merged PR #9. The subsequent web workspace, recovery, financial validation and security implementation is documented in [docs/implementation-report.md](docs/implementation-report.md). Do not treat the counts or release status below as the latest verification.
+
 # FinancialAgentia engineering report — 15 October 2026
 
 Latest follow-up validation: **128 Python tests passed; 14 Bun tests passed**.

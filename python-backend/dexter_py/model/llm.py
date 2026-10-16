@@ -44,10 +44,7 @@ try:
 except Exception:
     ChatGoogleGenerativeAI = None  # type: ignore
 
-try:
-    from langchain_ollama import ChatOllama  # type: ignore
-except Exception:
-    ChatOllama = None  # type: ignore
+from .ollama_client import OllamaChatClient as ChatOllama
 
 try:
     from langchain_core.messages import HumanMessage, SystemMessage
@@ -55,7 +52,7 @@ except Exception:
     HumanMessage = None
     SystemMessage = None
 try:
-    from langchain.callbacks.base import AsyncCallbackHandler
+    from langchain_core.callbacks import AsyncCallbackHandler
 except Exception:
     AsyncCallbackHandler = None
 
@@ -101,17 +98,17 @@ def get_chat_model(model_name: str = DEFAULT_MODEL, streaming: bool = False):
             raise ValueError("OpenAI model ID must be non-empty and contain no whitespace")
     if not explicit_openai and model_name.startswith("ollama-"):
         if ChatOllama is None:
-            raise RuntimeError("langchain-ollama is required for Ollama models")
-        is_cloud = model_name.endswith("-cloud")
+            raise RuntimeError("Ollama transport is unavailable")
+        is_cloud = model_name.startswith("ollama-cloud/") or model_name.endswith("-cloud")
         base_url = os.getenv(
             "OLLAMA_BASE_URL", "https://ollama.com" if is_cloud else "http://localhost:11434"
         )
         api_key = os.getenv("OLLAMA_API_KEY") if is_cloud else None
         if is_cloud and not api_key:
             raise RuntimeError("OLLAMA_API_KEY not set for Ollama cloud model")
-        model_clean = model_name.removeprefix("ollama-")
+        model_clean = model_name.removeprefix("ollama-cloud/") if model_name.startswith("ollama-cloud/") else model_name.removeprefix("ollama-")
         kwargs = {
-            "model": model_clean, "base_url": base_url, "streaming": streaming,
+            "model": model_clean, "base_url": base_url, "streaming": streaming, "timeout": get_llm_config().timeout,
         }
         if is_cloud:
             # Pass the cloud token to the underlying Ollama HTTP client, not as
@@ -159,7 +156,7 @@ def model_configuration_ready(model: str) -> bool:
     if not model or any(c.isspace() for c in model):
         return False
     if model.startswith("ollama-"):
-        return ChatOllama is not None and (not model.endswith("-cloud") or bool(os.getenv("OLLAMA_API_KEY")))
+        return ChatOllama is not None and (not (model.endswith("-cloud") or model.startswith("ollama-cloud/")) or bool(os.getenv("OLLAMA_API_KEY")))
     if model.startswith("claude-"):
         return ChatAnthropic is not None and bool(os.getenv("ANTHROPIC_API_KEY"))
     if model.startswith("gemini-"):
@@ -259,6 +256,8 @@ async def call_llm(
     )
     async def _make_request() -> str:
         """Inner function with retry logic."""
+        from .budget import reserve_model_call
+        reserve_model_call(max_tokens, len(enhanced_prompt) + len(enhanced_system_prompt))
         client = await get_llm_client(model)
 
         # Build a messages structure that we can pass to different clients.
@@ -451,6 +450,8 @@ async def call_llm_stream(
         has_tools=bool(tools)
     )
     
+    from .budget import reserve_model_call
+    reserve_model_call(max_tokens, len(prompt) + len(enhanced_system_prompt))
     client = await get_llm_client(model)
 
     # Try provider-specific streaming where available

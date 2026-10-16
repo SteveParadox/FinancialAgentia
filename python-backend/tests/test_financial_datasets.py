@@ -20,7 +20,7 @@ def test_quote_origin_and_source():
             assert result["ticker"] == "AAPL"
             assert result["data"]["price"] == 185.50
             assert "test-secret" not in result["source_url"]
-            assert requests[0].url.path == "/prices/snapshot/"
+            assert requests[0].url.path == "/prices/snapshot"
             assert requests[0].url.params["ticker"] == "AAPL"
     run(check())
 
