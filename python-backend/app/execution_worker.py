@@ -108,6 +108,11 @@ class ExecutionWorker:
                     raise asyncio.CancelledError
 
             scope = json.loads(record.get("request_options", "{}"))
+            context_origin = None
+            if scope.get("context_id"):
+                from app.platform_store import PlatformStore
+                context, context_origin = await PlatformStore(self.registry).context(record["principal"], scope["context_id"])
+                history = ReadOnlyHistory([*history.turns, {"query": "Authorized saved research context", "answer": context}])
             saved = json.loads(record.get("artifacts", "null"))
             answer = await self.orchestrator.run(
                 record["query"], history, resume=saved, research_scope=scope,
@@ -131,6 +136,8 @@ class ExecutionWorker:
                 ids = {row.evidence_id for row in evidence}
                 evidence = [row for row in evidence if all(ref in ids for ref in row.input_evidence_ids)]
                 limitations.append("Historical prices only; point-in-time fundamental filings and corporate-action adjustments are not independently verified.")
+            from dexter_py.agent.derived_metrics import calculate_evidence_metrics
+            evidence.extend(calculate_evidence_metrics(evidence))
             used = {row.source_id for row in evidence}
             sources = [source for source in sources if source.source_id in used or (
                 source.headline and (not scope.get("symbols") or source.symbol in scope["symbols"])
@@ -181,6 +188,9 @@ class ExecutionWorker:
             claims, rejected = validate_claims(proposed, evidence)
             if rejected:
                 limitations.append(f"{len(rejected)} unsupported or inconsistent claims rejected.")
+            from dexter_py.agent.verification import verify_research
+            verification = verify_research(sources, evidence, claims)
+            limitations.extend(verification.limitations)
             report = verified_report(
                 execution_id, record["session_id"], sources, evidence, claims, limitations)
             report.agent_executions = []
@@ -194,7 +204,8 @@ class ExecutionWorker:
                 report.agent_executions.append(AgentExecution.model_validate(summary))
             budget = current_budget.get()
             report.model_metadata = {
-                "configured_model": record["model_version"], "attempt": int(record["attempt_count"]),
+                "verification": verification.model_dump(),
+                "configured_model": record["model_version"], "context_origin_execution_id": context_origin, "attempt": int(record["attempt_count"]),
                 "workflow_execution_id": execution_id + ":" + str(generation),
                 "model_calls_reserved": budget.calls if budget else None,
                 "output_tokens_reserved": budget.reserved_output_tokens if budget else None,
@@ -268,11 +279,15 @@ class ExecutionWorker:
                     logger.warning("worker_heartbeat_unavailable", worker_id=self.worker_id)
                 await asyncio.sleep(5)
         heartbeat = asyncio.create_task(pulse())
+        from app.monitoring import MonitoringService
+        monitoring = MonitoringService(self.registry, self.orchestrator)
+        scheduler = asyncio.create_task(monitoring.run(self.stopping))
         try:
             await self._run_jobs()
         finally:
             heartbeat.cancel()
-            await asyncio.gather(heartbeat, return_exceptions=True)
+            scheduler.cancel()
+            await asyncio.gather(heartbeat, scheduler, return_exceptions=True)
             try:
                 await self.registry.redis.zrem(self.registry.prefix + "workers", self.worker_id)
             except RedisError:

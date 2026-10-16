@@ -5,9 +5,28 @@ import sys
 
 from dexter_py.agent.contracts import AgentExecution
 from dexter_py.agent.financial_evidence import ResearchReport
+from app.platform_api import PortfolioInput, LedgerInput, RuleInput, InvitationInput, CommentInput, MemoryInput, PortfolioUpdate, VersionInput
+from dexter_py.tools.data_contracts import FinancialInstrument, MarketObservation
+from dexter_py.agent.verification import VerificationOutcome
+from pydantic import BaseModel
+
+
+class PlatformContracts(BaseModel):
+    """Catalog of version-one request/data contracts, not one API payload."""
+    portfolio: PortfolioInput
+    ledger_import: LedgerInput
+    monitoring_rule: RuleInput
+    invitation: InvitationInput
+    comment: CommentInput
+    memory: MemoryInput
+    portfolio_update: PortfolioUpdate
+    versioned_operation: VersionInput
+    instrument: FinancialInstrument
+    market_observation: MarketObservation
+    verification: VerificationOutcome
 
 root = Path(__file__).resolve().parents[2] / 'contracts'
-for name, model in [('research-report.v1', ResearchReport), ('agent-execution.v1', AgentExecution)]:
+for name, model in [('research-report.v1', ResearchReport), ('agent-execution.v1', AgentExecution), ('platform.v1', PlatformContracts)]:
     rendered = json.dumps(model.model_json_schema(), indent=2, sort_keys=True) + '\n'
     target = root / (name + '.schema.json')
     if '--check' in sys.argv:

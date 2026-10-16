@@ -18,6 +18,7 @@ import {
   timestamp,
 } from "./api";
 import { ReportView } from "./report";
+import { Platform } from "./platform";
 
 class ErrorBoundary extends Component<
   { children: React.ReactNode },
@@ -639,6 +640,11 @@ function Workspace({
             ["active", "◷", "Active research"],
             ["history", "▤", "Research history"],
             ["reports", "▧", "Saved reports"],
+            ["financial", "↗", "Financial data"],
+            ["portfolios", "◫", "Portfolios"],
+            ["memory", "◎", "Research context"],
+            ["monitoring", "◉", "Monitoring"],
+            ["collaboration", "♧", "Team workspaces"],
             ["settings", "⚙", "Connection"],
           ].map(([id, icon, label]) => (
             <button
@@ -690,15 +696,22 @@ function Workspace({
                 FINANCIALAGENTIA / RESEARCH INTELLIGENCE
               </span>
               <h1>
-                {tab === "workspace"
-                  ? "Your next insight starts here."
-                  : tab === "settings"
-                    ? "Workspace connection"
-                    : tab === "active"
-                      ? "Research in motion."
-                      : tab === "reports"
-                        ? "Your evidence, preserved."
-                        : "A record of your research."}
+                {{
+                  financial: "Inspect the financial record.",
+                  portfolios: "Your portfolio, in context.",
+                  memory: "Build on previous research.",
+                  monitoring: "Stay informed, on your schedule.",
+                  collaboration: "Research together, share deliberately.",
+                }[tab] ||
+                  (tab === "workspace"
+                    ? "Your next insight starts here."
+                    : tab === "settings"
+                      ? "Workspace connection"
+                      : tab === "active"
+                        ? "Research in motion."
+                        : tab === "reports"
+                          ? "Your evidence, preserved."
+                          : "A record of your research.")}
               </h1>
               <p>
                 {tab === "workspace"
@@ -731,6 +744,25 @@ function Workspace({
                 Reconnect credentials
               </button>
             </div>
+          )}
+          {[
+            "financial",
+            "portfolios",
+            "memory",
+            "monitoring",
+            "collaboration",
+          ].includes(tab) && (
+            <Platform
+              key={tab}
+              api={api}
+              section={tab}
+              openJob={(id) => {
+                setSelected(id);
+                location.hash = "job=" + id;
+                setTab("workspace");
+                setRefresh((x) => x + 1);
+              }}
+            />
           )}
           {tab === "workspace" && (
             <>

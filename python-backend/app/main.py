@@ -91,6 +91,8 @@ async def lifespan(application: FastAPI):
         shared = ExecutionRegistry.from_env()
         if not await shared.health():
             raise RuntimeError("Durable execution Redis is unavailable")
+        from app.platform_store import PlatformStore
+        application.state.platform_store = PlatformStore(shared)
         application.state.execution_registry = shared
     elif os.getenv("BACKEND_ENV", "development").lower() == "production":
         raise RuntimeError("Production financial research requires REDIS_URL")
@@ -98,6 +100,15 @@ async def lifespan(application: FastAPI):
     # production financial feed. Never register demonstration prices here.
     tools = ToolExecutor()
     financial_provider = register_financial_tools(tools)
+    from dexter_py.tools.sec_edgar import register_sec_tools
+    sec_provider = register_sec_tools(tools)
+    from dexter_py.tools.data_service import FinancialDataService
+    data_service = FinancialDataService(financial_provider, sec_provider)
+    data_service.register(tools)
+    application.state.data_service = data_service
+    if sec_provider and application.state.execution_registry:
+        sec_provider.redis = application.state.execution_registry.redis
+    application.state.sec_provider = sec_provider
     application.state.financial_provider = financial_provider
     application.state.orchestrator = Orchestrator(
         model=model, max_iterations=iterations, tool_executor=tools,
@@ -106,7 +117,7 @@ async def lifespan(application: FastAPI):
     try:
         yield
     finally:
-        for dependency in (application.state.session_store, tools, financial_provider,
+        for dependency in (application.state.session_store, tools, financial_provider, sec_provider,
                            application.state.execution_registry):
             if dependency is None:
                 continue
@@ -760,3 +771,6 @@ async def shared_state_unavailable(request: Request, exc: RedisError):
     logger.warning("shared_state_unavailable", error_category=type(exc).__name__)
     return JSONResponse(status_code=503, content={"detail": "Research storage is temporarily unavailable. Retry shortly."},
                         headers={"Retry-After": "3"})
+
+from app.platform_api import router as platform_router
+app.include_router(platform_router)

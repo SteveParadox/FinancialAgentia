@@ -264,7 +264,10 @@ class Orchestrator:
             f"{p.summary}: " + ", ".join(f"{t.id}={t.status}" for t in p.tasks)
             for p in context.completed_plans[-2:]
         )
+        from .verification import planning_policy
+        policy = planning_policy(context.query, tool_names)
         prompt = (
+            f"Capability and specialization policy: {policy}\n"
             f"Query: {context.query}\n"
             f"Understanding: {context.understanding.model_dump_json()}\n"
             f"Iteration: {context.iteration}\nPrevious plans: {prior}\n"

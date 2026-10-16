@@ -1,0 +1,785 @@
+{
+  "$defs": {
+    "CommentInput": {
+      "additionalProperties": false,
+      "properties": {
+        "comment_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Comment Id"
+        },
+        "section": {
+          "default": "report",
+          "maxLength": 80,
+          "title": "Section",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 3000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "text"
+      ],
+      "title": "CommentInput",
+      "type": "object"
+    },
+    "FinancialInstrument": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_class": {
+          "enum": [
+            "equity_or_etf_unclassified",
+            "filing_entity"
+          ],
+          "title": "Asset Class",
+          "type": "string"
+        },
+        "exchange": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exchange"
+        },
+        "identity_quality": {
+          "enum": [
+            "source_qualified_symbol",
+            "explicit_issuer_mapping"
+          ],
+          "title": "Identity Quality",
+          "type": "string"
+        },
+        "instrument_id": {
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "issuer_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Issuer Id"
+        },
+        "limitations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "trading_currency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trading Currency"
+        }
+      },
+      "required": [
+        "instrument_id",
+        "symbol",
+        "provider",
+        "asset_class",
+        "identity_quality"
+      ],
+      "title": "FinancialInstrument",
+      "type": "object"
+    },
+    "InvitationInput": {
+      "additionalProperties": false,
+      "properties": {
+        "recipient": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Recipient",
+          "type": "string"
+        },
+        "role": {
+          "default": "viewer",
+          "enum": [
+            "admin",
+            "editor",
+            "viewer"
+          ],
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recipient"
+      ],
+      "title": "InvitationInput",
+      "type": "object"
+    },
+    "LedgerEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "anyOf": [
+            {
+              "maximum": 1000000000000000.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,18}|(?=[\\d.]{1,29}0*$)\\d{0,18}\\.\\d{0,10}0*$)",
+              "type": "string"
+            }
+          ],
+          "default": "0",
+          "title": "Amount"
+        },
+        "currency": {
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        },
+        "date": {
+          "format": "date",
+          "title": "Date",
+          "type": "string"
+        },
+        "fee": {
+          "anyOf": [
+            {
+              "maximum": 1000000000.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,18}|(?=[\\d.]{1,29}0*$)\\d{0,18}\\.\\d{0,10}0*$)",
+              "type": "string"
+            }
+          ],
+          "default": "0",
+          "title": "Fee"
+        },
+        "price": {
+          "anyOf": [
+            {
+              "maximum": 1000000000000.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,18}|(?=[\\d.]{1,29}0*$)\\d{0,18}\\.\\d{0,10}0*$)",
+              "type": "string"
+            }
+          ],
+          "default": "0",
+          "title": "Price"
+        },
+        "quantity": {
+          "anyOf": [
+            {
+              "maximum": 1000000000000.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,18}|(?=[\\d.]{1,29}0*$)\\d{0,18}\\.\\d{0,10}0*$)",
+              "type": "string"
+            }
+          ],
+          "default": "0",
+          "title": "Quantity"
+        },
+        "symbol": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Symbol"
+        },
+        "transaction_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.:-]+$",
+          "title": "Transaction Id",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "BUY",
+            "SELL",
+            "DEPOSIT",
+            "WITHDRAWAL",
+            "DIVIDEND",
+            "SPLIT"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "transaction_id",
+        "date",
+        "type",
+        "currency"
+      ],
+      "title": "LedgerEntry",
+      "type": "object"
+    },
+    "LedgerInput": {
+      "additionalProperties": false,
+      "properties": {
+        "csv": {
+          "anyOf": [
+            {
+              "maxLength": 500000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Csv"
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/LedgerEntry"
+          },
+          "maxItems": 1000,
+          "title": "Entries",
+          "type": "array"
+        },
+        "preview": {
+          "default": false,
+          "title": "Preview",
+          "type": "boolean"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "title": "LedgerInput",
+      "type": "object"
+    },
+    "MarketObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "adjustment_type": {
+          "default": "unspecified",
+          "title": "Adjustment Type",
+          "type": "string"
+        },
+        "currency": {
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        },
+        "instrument": {
+          "$ref": "#/$defs/FinancialInstrument"
+        },
+        "market_session": {
+          "default": "unspecified",
+          "title": "Market Session",
+          "type": "string"
+        },
+        "observation_timestamp": {
+          "format": "date-time",
+          "title": "Observation Timestamp",
+          "type": "string"
+        },
+        "price": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Price"
+        },
+        "quote_kind": {
+          "enum": [
+            "unverified",
+            "stale",
+            "historical",
+            "end_of_day"
+          ],
+          "title": "Quote Kind",
+          "type": "string"
+        },
+        "retrieval_timestamp": {
+          "format": "date-time",
+          "title": "Retrieval Timestamp",
+          "type": "string"
+        },
+        "source_url": {
+          "title": "Source Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instrument",
+        "price",
+        "currency",
+        "observation_timestamp",
+        "retrieval_timestamp",
+        "source_url",
+        "quote_kind"
+      ],
+      "title": "MarketObservation",
+      "type": "object"
+    },
+    "MemoryInput": {
+      "additionalProperties": false,
+      "properties": {
+        "execution_id": {
+          "format": "uuid",
+          "title": "Execution Id",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "execution_id",
+        "label"
+      ],
+      "title": "MemoryInput",
+      "type": "object"
+    },
+    "PortfolioInput": {
+      "additionalProperties": false,
+      "properties": {
+        "benchmark": {
+          "anyOf": [
+            {
+              "maxLength": 20,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Benchmark"
+        },
+        "currency": {
+          "default": "USD",
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 120,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "PortfolioInput",
+      "type": "object"
+    },
+    "PortfolioUpdate": {
+      "additionalProperties": false,
+      "properties": {
+        "benchmark": {
+          "anyOf": [
+            {
+              "maxLength": 20,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Benchmark"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "title": "PortfolioUpdate",
+      "type": "object"
+    },
+    "ResearchScope": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "default": "general",
+          "enum": [
+            "company",
+            "comparison",
+            "historical_prices",
+            "general"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "end_date": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Date"
+        },
+        "start_date": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Date"
+        },
+        "symbols": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 5,
+          "title": "Symbols",
+          "type": "array"
+        }
+      },
+      "title": "ResearchScope",
+      "type": "object"
+    },
+    "RuleInput": {
+      "additionalProperties": false,
+      "properties": {
+        "cooldown_seconds": {
+          "default": 3600,
+          "maximum": 2592000,
+          "minimum": 300,
+          "title": "Cooldown Seconds",
+          "type": "integer"
+        },
+        "currency": {
+          "default": "USD",
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        },
+        "interval_seconds": {
+          "default": 3600,
+          "maximum": 2592000,
+          "minimum": 300,
+          "title": "Interval Seconds",
+          "type": "integer"
+        },
+        "kind": {
+          "enum": [
+            "price_above",
+            "price_below",
+            "research"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 120,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Name",
+          "type": "string"
+        },
+        "query": {
+          "anyOf": [
+            {
+              "maxLength": 10000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Query"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResearchScope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "symbol": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Symbol"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 1000000000000.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threshold"
+        },
+        "timezone": {
+          "const": "UTC",
+          "default": "UTC",
+          "title": "Timezone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "title": "RuleInput",
+      "type": "object"
+    },
+    "VerificationOutcome": {
+      "properties": {
+        "checks": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Checks",
+          "type": "array"
+        },
+        "conflicting_observation_groups": {
+          "minimum": 0,
+          "title": "Conflicting Observation Groups",
+          "type": "integer"
+        },
+        "equivalent_matching_groups": {
+          "minimum": 0,
+          "title": "Equivalent Matching Groups",
+          "type": "integer"
+        },
+        "evidence_count": {
+          "minimum": 0,
+          "title": "Evidence Count",
+          "type": "integer"
+        },
+        "independent_matching_groups": {
+          "minimum": 0,
+          "title": "Independent Matching Groups",
+          "type": "integer"
+        },
+        "limitations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        },
+        "provider_count": {
+          "minimum": 0,
+          "title": "Provider Count",
+          "type": "integer"
+        },
+        "source_count": {
+          "minimum": 0,
+          "title": "Source Count",
+          "type": "integer"
+        },
+        "stale_count": {
+          "minimum": 0,
+          "title": "Stale Count",
+          "type": "integer"
+        },
+        "supported_claim_count": {
+          "minimum": 0,
+          "title": "Supported Claim Count",
+          "type": "integer"
+        },
+        "version": {
+          "default": "financial-verification-v1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_count",
+        "provider_count",
+        "evidence_count",
+        "supported_claim_count",
+        "stale_count",
+        "conflicting_observation_groups",
+        "independent_matching_groups",
+        "equivalent_matching_groups",
+        "checks",
+        "limitations"
+      ],
+      "title": "VerificationOutcome",
+      "type": "object"
+    },
+    "VersionInput": {
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "title": "VersionInput",
+      "type": "object"
+    }
+  },
+  "description": "Catalog of version-one request/data contracts, not one API payload.",
+  "properties": {
+    "comment": {
+      "$ref": "#/$defs/CommentInput"
+    },
+    "instrument": {
+      "$ref": "#/$defs/FinancialInstrument"
+    },
+    "invitation": {
+      "$ref": "#/$defs/InvitationInput"
+    },
+    "ledger_import": {
+      "$ref": "#/$defs/LedgerInput"
+    },
+    "market_observation": {
+      "$ref": "#/$defs/MarketObservation"
+    },
+    "memory": {
+      "$ref": "#/$defs/MemoryInput"
+    },
+    "monitoring_rule": {
+      "$ref": "#/$defs/RuleInput"
+    },
+    "portfolio": {
+      "$ref": "#/$defs/PortfolioInput"
+    },
+    "portfolio_update": {
+      "$ref": "#/$defs/PortfolioUpdate"
+    },
+    "verification": {
+      "$ref": "#/$defs/VerificationOutcome"
+    },
+    "versioned_operation": {
+      "$ref": "#/$defs/VersionInput"
+    }
+  },
+  "required": [
+    "portfolio",
+    "ledger_import",
+    "monitoring_rule",
+    "invitation",
+    "comment",
+    "memory",
+    "portfolio_update",
+    "versioned_operation",
+    "instrument",
+    "market_observation",
+    "verification"
+  ],
+  "title": "PlatformContracts",
+  "type": "object"
+}

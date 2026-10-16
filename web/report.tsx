@@ -416,7 +416,10 @@ export function ReportView({ report }: { report: ResearchReport }) {
               <dt>Source</dt>
               <dd>{focus.source_id}</dd>
               <dt>As of</dt>
-              <dd>{focus.period_end || focus.data_as_of || "Unavailable"}</dd>
+              <dd>
+                {focus.period_start ? focus.period_start + " to " : ""}
+                {focus.period_end || focus.data_as_of || "Unavailable"}
+              </dd>
               <dt>Method</dt>
               <dd>
                 {focus.calculation_method || "Provider-reported observation"}
@@ -505,6 +508,19 @@ export function ReportView({ report }: { report: ResearchReport }) {
             )}
           </dd>
         </dl>
+        {!!(report.model_metadata as Record<string, unknown> | undefined)
+          ?.verification && (
+          <details>
+            <summary>Deterministic verification record</summary>
+            <pre>
+              {JSON.stringify(
+                (report.model_metadata as Record<string, unknown>).verification,
+                null,
+                2,
+              )}
+            </pre>
+          </details>
+        )}
         {report.agent_executions.length > 0 && (
           <div className="agent-list">
             {report.agent_executions.map((agent) => (
