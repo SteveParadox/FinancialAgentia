@@ -599,3 +599,56 @@ def test_evidence_order_cannot_bypass_semantic_deduplication():
             assert len(await repo.assertions_for(scope, a.id)) == 1
 
     asyncio.run(case())
+
+
+def test_legacy_fingerprint_replay_does_not_break_existing_assertions():
+    async def case():
+        import hashlib
+        import json
+
+        async with database() as (repo, scope):
+            a, _, source, assertion = await populate(repo, scope)
+            another = GraphSource.model_validate(
+                {
+                    **source.model_dump(),
+                    "id": uuid4(),
+                    "document_id": "fixture:legacy-other",
+                }
+            )
+            await repo.save_source(scope, another)
+            refs = tuple(
+                sorted(
+                    (
+                        GraphEvidenceReference(source_id=source.id, location="one"),
+                        GraphEvidenceReference(source_id=another.id, location="two"),
+                    ),
+                    key=lambda ref: str(ref.source_id),
+                    reverse=True,
+                )
+            )
+            original = assertion.model_copy(update={"evidence": refs})
+            saved = await repo.save_assertion(scope, original)
+            legacy_data = original.model_dump(
+                exclude={"id", "ingested_at"}, mode="json"
+            )
+            legacy_hash = hashlib.sha256(
+                json.dumps(legacy_data, sort_keys=True).encode()
+            ).hexdigest()
+            async with repo._driver.session(database=repo.config.database) as session:
+                await (
+                    await session.run(
+                        "MATCH (a:Assertion {scope:$scope,id:$id}) "
+                        "SET a.fingerprint=$fingerprint",
+                        scope=scope.key,
+                        id=str(original.id),
+                        fingerprint=legacy_hash,
+                    )
+                ).consume()
+            assert await repo.save_assertion(scope, original) == saved
+            with pytest.raises(GraphConflict):
+                await repo.save_assertion(
+                    scope, original.model_copy(update={"id": uuid4()})
+                )
+            assert len(await repo.assertions_for(scope, a.id)) == 1
+
+    asyncio.run(case())
