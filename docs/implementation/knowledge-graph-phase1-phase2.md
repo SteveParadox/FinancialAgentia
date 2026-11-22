@@ -89,3 +89,16 @@ Start Phase 3 with one permissioned authoritative ingestion adapter and a separa
 - `python-backend/tests/test_graph_models.py`
 - `python-backend/tests/test_graph_repository.py`
 - `python-backend/tests/test_graph_restart.py`
+
+
+## Follow-up integrity revision (2026-11-22)
+
+The separate review branch `fix/financial-graph-integrity-review-20261122` makes targeted changes without changing the Phase 1–2 ownership boundary:
+
+- Schema verification checks both required temporal indexes and exact applied migration version/checksum history, not merely constraint names. Schema drift now blocks graph-enabled application startup.
+- `GraphRepository.get_entity(..., known_at=...)` and `GET /api/v1/graph/entities/{uuid}?known_at=...` expose recorded entity metadata at knowledge time. Historical identifier ownership and valid-time entity revisions are still outside the current scope.
+- The assertion semantic fingerprint sorts evidence references before hashing, making duplicate detection order-independent without changing persisted evidence ordering.
+- Entity and source model validation rejects timestamps more than five minutes in the future. This is a bounded clock-skew allowance, not a claim of independently verified source provenance.
+- New unit, disposable Neo4j integration, and API regression cases cover these corrections. A separate GitHub Actions job provisions disposable Neo4j and Redis for graph tests rather than skipping all database-backed cases.
+
+**Verification distinction:** The original 251-pass full Python suite and other results above describe the initial implementation commit, not this revision. Do not attribute those historical results to the review branch. The review revision requires fresh CI and/or local test execution before it can be considered verified.
