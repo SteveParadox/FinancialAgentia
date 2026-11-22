@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 import hashlib
 import json
@@ -187,6 +187,8 @@ class GraphEntity(Strict):
     def integrity(self) -> Self:
         if self.updated_at < self.created_at:
             raise ValueError("Entity update precedes creation")
+        if self.created_at > now() + timedelta(minutes=5) or self.updated_at > now() + timedelta(minutes=5):
+            raise ValueError("Entity timestamps cannot be in the future")
         if len({item.key for item in self.identifiers}) != len(self.identifiers):
             raise ValueError("Duplicate identifier")
         allowed = {
@@ -226,6 +228,8 @@ class GraphSource(Strict):
 
     @model_validator(mode="after")
     def location(self) -> Self:
+        if self.retrieved_at > now() + timedelta(minutes=5):
+            raise ValueError("Source retrieval cannot be in the future")
         if self.published_at and self.published_at > self.retrieved_at:
             raise ValueError("Source publication cannot follow retrieval")
         if self.url is None and self.document_id is None:
