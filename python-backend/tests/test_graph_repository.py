@@ -541,3 +541,61 @@ def test_schema_failure_does_not_record_partial_migration():
                 assert row["count"] == 0
 
     asyncio.run(case())
+
+
+def test_entity_metadata_is_retrievable_at_historical_knowledge_time():
+    async def case():
+        from datetime import datetime
+
+        async with database() as (repo, scope):
+            a = make_entity(scope)
+            before_creation = now()
+            await repo.upsert_entity(scope, a)
+            before_rename = now()
+            renamed = GraphEntity.model_validate(
+                {
+                    **a.model_dump(),
+                    "canonical_name": "Synthetic renamed company",
+                    "updated_at": now(),
+                }
+            )
+            await repo.upsert_entity(scope, renamed, expected_revision=1)
+            assert await repo.get_entity(scope, a.id, known_at=before_creation) is None
+            assert await repo.get_entity(scope, a.id, known_at=before_rename) == a
+            assert await repo.get_entity(scope, a.id, known_at=now()) == renamed
+            assert await repo.get_entity(scope, a.id) == renamed
+            with pytest.raises(GraphIntegrityError):
+                await repo.get_entity(
+                    scope, a.id, known_at=datetime(2024, 1, 1)
+                )
+
+    asyncio.run(case())
+
+
+def test_evidence_order_cannot_bypass_semantic_deduplication():
+    async def case():
+        async with database() as (repo, scope):
+            a, _, source, assertion = await populate(repo, scope)
+            second = GraphSource.model_validate(
+                {
+                    **source.model_dump(),
+                    "id": uuid4(),
+                    "document_id": "fixture:another-source",
+                }
+            )
+            await repo.save_source(scope, second)
+            refs = (
+                GraphEvidenceReference(source_id=source.id, location="page 1"),
+                GraphEvidenceReference(source_id=second.id, location="page 2"),
+            )
+            first = assertion.model_copy(update={"evidence": refs})
+            saved = await repo.save_assertion(scope, first)
+            reordered = first.model_copy(update={"evidence": tuple(reversed(refs))})
+            assert await repo.save_assertion(scope, reordered) == saved
+            with pytest.raises(GraphConflict):
+                await repo.save_assertion(
+                    scope, reordered.model_copy(update={"id": uuid4()})
+                )
+            assert len(await repo.assertions_for(scope, a.id)) == 1
+
+    asyncio.run(case())
