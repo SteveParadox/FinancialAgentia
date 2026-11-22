@@ -89,6 +89,20 @@ def test_authenticated_graph_workspace_and_principal_isolation(monkeypatch):
                     assert (await client.get(path, headers=bob)).status_code == 404
                     assert (
                         await client.get(
+                            path,
+                            headers=alice,
+                            params={"known_at": "2024-01-01T00:00:00"},
+                        )
+                    ).status_code == 422
+                    assert (
+                        await client.get(
+                            path,
+                            headers=alice,
+                            params={"known_at": "2000-01-01T00:00:00Z"},
+                        )
+                    ).status_code == 404
+                    assert (
+                        await client.get(
                             path + "/assertions", headers=alice, params={"limit": 101}
                         )
                     ).status_code == 422
