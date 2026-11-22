@@ -38,10 +38,17 @@ async def ontology(request: Request) -> GraphOntologyDefinition:
 
 @router.get("/entities/{identity}")
 async def entity(
-    request: Request, identity: UUID, workspace_id: UUID | None = None
+    request: Request,
+    identity: UUID,
+    workspace_id: UUID | None = None,
+    known_at: datetime | None = None,
 ) -> GraphEntity:
+    if known_at is not None and (
+        known_at.tzinfo is None or known_at.utcoffset() is None
+    ):
+        raise HTTPException(422, "Historical timestamps must include timezone")
     repo, scope = await scoped_repository(request, workspace_id)
-    result = await repo.get_entity(scope, identity)
+    result = await repo.get_entity(scope, identity, known_at=known_at)
     if result is None:
         raise HTTPException(404, "Graph entity not found")
     return result

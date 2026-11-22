@@ -222,3 +222,24 @@ def test_equivalent_timezone_serialization_and_source_date_integrity():
             license="test",
             published_at=now() + timedelta(days=1),
         )
+
+
+def test_future_entity_and_source_timestamps_are_rejected():
+    future = now() + timedelta(days=1)
+    with pytest.raises(ValidationError):
+        GraphEntity(
+            scope=SCOPE,
+            entity_type="Company",
+            canonical_name="Synthetic future company",
+            created_at=future,
+            updated_at=future,
+        )
+    with pytest.raises(ValidationError):
+        GraphSource(
+            scope=SCOPE,
+            provider="Synthetic fixture",
+            document_id="fixture:future",
+            document_type="test filing",
+            license="test only",
+            retrieved_at=future,
+        )
