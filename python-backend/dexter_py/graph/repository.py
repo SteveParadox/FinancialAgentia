@@ -75,9 +75,15 @@ class GraphRepository:
         return repo
 
     async def verify_schema(self) -> None:
+        """Reject incomplete or drifted schema; startup never applies migrations."""
+        # Imported here to avoid a module-level repository/migrations cycle.
+        from .migrations import MIGRATIONS
+
         async def check(tx: AsyncManagedTransaction) -> None:
-            rows = await self._run(tx, "SHOW CONSTRAINTS YIELD name RETURN name")
-            required = {
+            constraints = await self._run(
+                tx, "SHOW CONSTRAINTS YIELD name RETURN name"
+            )
+            required_constraints = {
                 "kg_entity",
                 "kg_identifier",
                 "kg_source",
@@ -86,9 +92,31 @@ class GraphRepository:
                 "kg_revision",
                 "kg_entity_revision",
             }
-            if not required <= {str(row["name"]) for row in rows}:
+            if not required_constraints <= {
+                str(row["name"]) for row in constraints
+            }:
                 raise GraphIntegrityError(
                     "Graph schema missing; run explicit graph migrations"
+                )
+            indexes = await self._run(tx, "SHOW INDEXES YIELD name RETURN name")
+            if not {"kg_assertion_time", "kg_revision_time"} <= {
+                str(row["name"]) for row in indexes
+            }:
+                raise GraphIntegrityError(
+                    "Graph indexes missing; run explicit graph migrations"
+                )
+            history = await self._run(
+                tx,
+                "MATCH (m:GraphMigration) RETURN m.version AS version,"
+                "m.checksum AS checksum ORDER BY m.version",
+            )
+            applied = [
+                (int(row["version"]), str(row["checksum"])) for row in history
+            ]
+            expected = [(m.version, m.checksum) for m in MIGRATIONS]
+            if applied != expected:
+                raise GraphIntegrityError(
+                    "Graph migration history missing or differs from checked-in schema"
                 )
 
         await self._transaction(False, check)
@@ -223,14 +251,35 @@ class GraphRepository:
 
         return await self._transaction(True, write)
 
-    async def get_entity(self, scope: GraphScope, identity: UUID) -> GraphEntity | None:
+    async def get_entity(
+        self, scope: GraphScope, identity: UUID, *, known_at: datetime | None = None
+    ) -> GraphEntity | None:
+        """Return current metadata or the revision recorded by knowledge time."""
+        if known_at is not None and (
+            known_at.tzinfo is None or known_at.utcoffset() is None
+        ):
+            raise GraphIntegrityError("Historical timestamps must be timezone aware")
+
         async def read(tx: AsyncManagedTransaction) -> GraphEntity | None:
-            rows = await self._run(
-                tx,
-                "MATCH (e:Entity {scope:$scope,id:$id}) RETURN e.payload AS payload",
-                scope=scope.key,
-                id=str(identity),
-            )
+            if known_at is None:
+                rows = await self._run(
+                    tx,
+                    "MATCH (e:Entity {scope:$scope,id:$id}) RETURN e.payload AS payload",
+                    scope=scope.key,
+                    id=str(identity),
+                )
+            else:
+                rows = await self._run(
+                    tx,
+                    """MATCH (e:Entity {scope:$scope,id:$id})-[:HAS_ENTITY_REVISION]->
+                       (v:EntityRevision {scope:$scope,entity_id:$id})
+                       WHERE v.recorded_at <= $known
+                       RETURN v.payload AS payload
+                       ORDER BY v.revision DESC LIMIT 1""",
+                    scope=scope.key,
+                    id=str(identity),
+                    known=known_at.timestamp(),
+                )
             return (
                 GraphEntity.model_validate_json(str(rows[0]["payload"]))
                 if rows
@@ -331,6 +380,16 @@ class GraphRepository:
         semantic = assertion.model_dump(exclude={"ingested_at", "id"}, mode="json")
         import json
 
+        # Evidence is a set of supporting references, not an ordered list.
+        # Canonicalize it so retries cannot create duplicate facts by reordering.
+        semantic["evidence"] = sorted(
+            semantic["evidence"],
+            key=lambda ref: (
+                ref["source_id"],
+                ref["location"],
+                ref.get("passage_digest") or "",
+            ),
+        )
         fingerprint = hashlib.sha256(
             json.dumps(semantic, sort_keys=True).encode()
         ).hexdigest()
