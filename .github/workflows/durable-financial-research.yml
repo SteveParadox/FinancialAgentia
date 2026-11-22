@@ -75,3 +75,45 @@ jobs:
       - run: bun run build
       - run: bun run typecheck:web
       - run: bun run build:web
+
+
+  graph-neo4j-integration:
+    runs-on: ubuntu-latest
+    services:
+      neo4j:
+        image: neo4j:5.26.33-community
+        env:
+          NEO4J_AUTH: neo4j/disposable-ci-password
+        ports:
+          - "7687:7687"
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p disposable-ci-password 'RETURN 1'"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 30
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - "6379:6379"
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      GRAPH_TEST_DISPOSABLE: "yes"
+      TEST_NEO4J_URI: bolt://127.0.0.1:7687
+      TEST_NEO4J_PASSWORD: disposable-ci-password
+      TEST_REDIS_URL: redis://127.0.0.1:6379/15
+    defaults:
+      run:
+        working-directory: python-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install graph integration dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Exercise graph models, persistence and authorized API
+        run: python -m pytest -q tests/test_graph_models.py tests/test_graph_repository.py tests/test_graph_api.py
