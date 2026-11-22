@@ -380,6 +380,11 @@ class GraphRepository:
         semantic = assertion.model_dump(exclude={"ingested_at", "id"}, mode="json")
         import json
 
+        # Existing graph rows may use the original evidence-order-sensitive hash.
+        # Preserve its value for compatibility checks on retry.
+        legacy_fingerprint = hashlib.sha256(
+            json.dumps(semantic, sort_keys=True).encode()
+        ).hexdigest()
         # Evidence is a set of supporting references, not an ordered list.
         # Canonicalize it so retries cannot create duplicate facts by reordering.
         semantic["evidence"] = sorted(
@@ -398,6 +403,18 @@ class GraphRepository:
         )
 
         async def write(tx: AsyncManagedTransaction) -> GraphAssertion:
+            # Preserve collision behavior for older unsorted fingerprints. A
+            # duplicate with a new ID must not bypass the legacy unique key.
+            if legacy_fingerprint != fingerprint:
+                legacy = await self._run(
+                    tx,
+                    """MATCH (a:Assertion {scope:$scope,fingerprint:$legacy})
+                       RETURN a.id AS id""",
+                    scope=scope.key,
+                    legacy=legacy_fingerprint,
+                )
+                if legacy and legacy[0]["id"] != str(stored.id):
+                    raise GraphConflict("Duplicate legacy assertion fingerprint")
             rows = await self._run(
                 tx,
                 """MATCH (s:Entity {scope:$scope,id:$subject}),(o:Entity {scope:$scope,id:$object})
@@ -448,9 +465,23 @@ class GraphRepository:
                 object=str(stored.object_id),
                 predicate=stored.predicate.value,
             )
-            if rows[0]["fingerprint"] != fingerprint:
-                raise GraphConflict("Assertion identity is immutable")
             persisted = GraphAssertion.model_validate_json(str(rows[0]["payload"]))
+            if rows[0]["fingerprint"] != fingerprint:
+                # Existing rows written before evidence canonicalization remain
+                # immutable and may be retried without a breaking migration.
+                original = persisted.model_dump(
+                    exclude={"ingested_at", "id"}, mode="json"
+                )
+                original["evidence"] = sorted(
+                    original["evidence"],
+                    key=lambda ref: (
+                        ref["source_id"],
+                        ref["location"],
+                        ref.get("passage_digest") or "",
+                    ),
+                )
+                if original != semantic:
+                    raise GraphConflict("Assertion identity is immutable")
             await self._run(
                 tx,
                 """MATCH (a:Assertion {scope:$scope,id:$id}),
