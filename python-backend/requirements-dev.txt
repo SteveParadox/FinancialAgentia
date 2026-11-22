@@ -1,2 +1,4 @@
 -r requirements.txt
 ruff==0.17.1
+# Strict checks for the additive typed graph package.
+mypy==1.19.1

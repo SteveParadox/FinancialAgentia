@@ -66,3 +66,9 @@ The companion legacy terminal client is started with `bun start` once the API an
 - [Current docs validation](docs/documentation-validation.md)
 
 Financial research is informational, not a guarantee of investment outcomes.
+
+## Living Financial Knowledge Graph (Phases 1–2)
+
+An optional Neo4j foundation adds a strict financial ontology, scoped authoritative identifiers, evidence-backed assertions and temporal verification history. It does not change research execution or ingest financial facts automatically. Graph connectivity is disabled by default.
+
+See [ontology](docs/architecture/knowledge-graph-ontology.md), [persistence and startup](docs/architecture/knowledge-graph-persistence.md), [security](docs/architecture/knowledge-graph-security.md), [migrations](docs/architecture/knowledge-graph-migrations.md), [research decisions](docs/architecture/knowledge-graph-research.md), and [implementation/verification](docs/implementation/knowledge-graph-phase1-phase2.md). Enable the separate `docker-compose.graph.yml` overlay after provisioning credentials; it publishes no database host ports.

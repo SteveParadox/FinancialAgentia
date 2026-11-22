@@ -9,6 +9,15 @@ from app.platform_api import PortfolioInput, LedgerInput, RuleInput, InvitationI
 from dexter_py.tools.data_contracts import FinancialInstrument, MarketObservation
 from dexter_py.agent.verification import VerificationOutcome
 from pydantic import BaseModel
+from dexter_py.graph.models import GraphEntity, GraphAssertion, GraphSource, GraphOntologyDefinition
+
+
+class GraphContracts(BaseModel):
+    entity: GraphEntity
+    assertion: GraphAssertion
+    source: GraphSource
+    ontology: GraphOntologyDefinition
+
 
 
 class PlatformContracts(BaseModel):
@@ -26,7 +35,7 @@ class PlatformContracts(BaseModel):
     verification: VerificationOutcome
 
 root = Path(__file__).resolve().parents[2] / 'contracts'
-for name, model in [('research-report.v1', ResearchReport), ('agent-execution.v1', AgentExecution), ('platform.v1', PlatformContracts)]:
+for name, model in [('research-report.v1', ResearchReport), ('agent-execution.v1', AgentExecution), ('platform.v1', PlatformContracts), ('knowledge-graph.v1', GraphContracts)]:
     rendered = json.dumps(model.model_json_schema(), indent=2, sort_keys=True) + '\n'
     target = root / (name + '.schema.json')
     if '--check' in sys.argv:

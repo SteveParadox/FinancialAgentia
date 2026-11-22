@@ -30,3 +30,12 @@ The documentation below describes the **browser/FastAPI/Redis/Python-worker** pl
 ## Status
 
 [Documentation verification boundary](documentation-validation.md) describes repository inspection versus actually executed runtime checks. External models, data providers and production readiness must be independently verified in the deployment environment.
+
+## Optional financial knowledge graph
+
+- [Research and audit](architecture/knowledge-graph-research.md)
+- [Ontology](architecture/knowledge-graph-ontology.md)
+- [Persistence and local startup](architecture/knowledge-graph-persistence.md)
+- [Security](architecture/knowledge-graph-security.md)
+- [Migrations](architecture/knowledge-graph-migrations.md)
+- [Phase 1–2 delivery and verification](implementation/knowledge-graph-phase1-phase2.md)

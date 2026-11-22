@@ -23,3 +23,6 @@ httpx==0.28.1
 
 # Optional Redis session-store runtime, installed for consistent production configuration
 redis>=5.0,<6.0
+
+# Optional graph runtime (connectivity remains disabled by default).
+neo4j==5.28.2

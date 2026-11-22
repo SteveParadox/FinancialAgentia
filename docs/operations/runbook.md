@@ -103,3 +103,7 @@ For a consistent maintenance backup, pause writers (API and worker) using an app
 Research history and intermediate jobs are not a permanent audit archive unless retention and backups are designed accordingly. In-app notifications have no external delivery transport. Price alerts use periodic UTC polling. Independent production tests of LLM entitlements, market provider licensing, backups, reverse proxy and resilience are deployment responsibilities.
 
 See [troubleshooting](troubleshooting.md), [production](../deployment/production-guide.md) and [verification](../testing/verification.md).
+
+## Optional graph operations
+
+Graph-enabled deployments use the [graph startup and recovery procedures](../architecture/knowledge-graph-persistence.md) and the explicit [schema migration command](../architecture/knowledge-graph-migrations.md). The graph service never replaces Redis backups or research worker recovery. Retain the Neo4j persistent volume across restarts and run migrations before graph-enabled API/worker startup.

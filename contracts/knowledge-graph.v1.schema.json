@@ -1,0 +1,899 @@
+{
+  "$defs": {
+    "EntityType": {
+      "enum": [
+        "Company",
+        "Person",
+        "Facility",
+        "Sector",
+        "Industry",
+        "Country",
+        "Region",
+        "FinancialIndicator",
+        "Filing",
+        "Event",
+        "Source",
+        "Security",
+        "Exchange",
+        "Currency"
+      ],
+      "title": "EntityType",
+      "type": "string"
+    },
+    "GraphAssertion": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/GraphEvidenceReference"
+          },
+          "maxItems": 30,
+          "title": "Evidence",
+          "type": "array"
+        },
+        "extraction_confidence": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Extraction Confidence"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "ingested_at": {
+          "format": "date-time",
+          "title": "Ingested At",
+          "type": "string"
+        },
+        "object_id": {
+          "format": "uuid",
+          "title": "Object Id",
+          "type": "string"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "predicate": {
+          "$ref": "#/$defs/GraphRelationshipPredicate"
+        },
+        "provenance": {
+          "maxLength": 500,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Provenance",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/GraphScope"
+        },
+        "subject_id": {
+          "format": "uuid",
+          "title": "Subject Id",
+          "type": "string"
+        },
+        "supersedes": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Supersedes"
+        },
+        "valid_from": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Valid From"
+        },
+        "valid_to": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Valid To"
+        },
+        "verification_status": {
+          "$ref": "#/$defs/VerificationStatus",
+          "default": "proposed"
+        }
+      },
+      "required": [
+        "scope",
+        "subject_id",
+        "predicate",
+        "object_id",
+        "observed_at",
+        "provenance"
+      ],
+      "title": "GraphAssertion",
+      "type": "object"
+    },
+    "GraphEntity": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "default": [],
+          "items": {
+            "maxLength": 500,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Aliases",
+          "type": "array"
+        },
+        "canonical_name": {
+          "maxLength": 500,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Canonical Name",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "entity_type": {
+          "$ref": "#/$defs/EntityType"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "identifiers": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/GraphEntityIdentifier"
+          },
+          "maxItems": 30,
+          "title": "Identifiers",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/GraphScope"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope",
+        "entity_type",
+        "canonical_name"
+      ],
+      "title": "GraphEntity",
+      "type": "object"
+    },
+    "GraphEntityIdentifier": {
+      "additionalProperties": false,
+      "properties": {
+        "assignment": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Assignment"
+        },
+        "authority": {
+          "maxLength": 500,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Authority",
+          "type": "string"
+        },
+        "namespace": {
+          "enum": [
+            "SEC_CIK",
+            "LEI",
+            "EXCHANGE_TICKER",
+            "ISIN",
+            "MIC",
+            "ISO_COUNTRY",
+            "ISO_CURRENCY"
+          ],
+          "title": "Namespace",
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 500,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "namespace",
+        "value",
+        "authority"
+      ],
+      "title": "GraphEntityIdentifier",
+      "type": "object"
+    },
+    "GraphEvidenceReference": {
+      "additionalProperties": false,
+      "properties": {
+        "location": {
+          "maxLength": 500,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Location",
+          "type": "string"
+        },
+        "passage_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Passage Digest"
+        },
+        "source_id": {
+          "format": "uuid",
+          "title": "Source Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "location"
+      ],
+      "title": "GraphEvidenceReference",
+      "type": "object"
+    },
+    "GraphOntologyDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_types": {
+          "default": [
+            "Company",
+            "Person",
+            "Facility",
+            "Sector",
+            "Industry",
+            "Country",
+            "Region",
+            "FinancialIndicator",
+            "Filing",
+            "Event",
+            "Source",
+            "Security",
+            "Exchange",
+            "Currency"
+          ],
+          "items": {
+            "$ref": "#/$defs/EntityType"
+          },
+          "title": "Entity Types",
+          "type": "array"
+        },
+        "predicates": {
+          "default": [
+            {
+              "cardinality": "many-to-many",
+              "direction": "subject-to-object",
+              "evidence_requirement": "Verified source plus precise passage/document location; confidence is insufficient.",
+              "inverse_storage": "derived",
+              "meaning": "Subject provides goods/services to object.",
+              "object_types": [
+                "Company"
+              ],
+              "predicate": "SUPPLIES",
+              "subject_types": [
+                "Company"
+              ],
+              "symmetric": false,
+              "temporal_requirement": "Record known effective dates only; unknown bounds remain null. Half-open intervals."
+            },
+            {
+              "cardinality": "many-to-many",
+              "direction": "subject-to-object",
+              "evidence_requirement": "Verified source plus precise passage/document location; confidence is insufficient.",
+              "inverse_storage": "derived",
+              "meaning": "Subject purchases from object; inverse of SUPPLIES.",
+              "object_types": [
+                "Company"
+              ],
+              "predicate": "CUSTOMER_OF",
+              "subject_types": [
+                "Company"
+              ],
+              "symmetric": false,
+              "temporal_requirement": "Record known effective dates only; unknown bounds remain null. Half-open intervals."
+            },
+            {
+              "cardinality": "many-to-many",
+              "direction": "subject-to-object",
+              "evidence_requirement": "Verified source plus precise passage/document location; confidence is insufficient.",
+              "inverse_storage": "derived",
+              "meaning": "Documented competition; no dependency or causality inferred.",
+              "object_types": [
+                "Company"
+              ],
+              "predicate": "COMPETES_WITH",
+              "subject_types": [
+                "Company"
+              ],
+              "symmetric": true,
+              "temporal_requirement": "Record known effective dates only; unknown bounds remain null. Half-open intervals."
+            },
+            {
+              "cardinality": "many-to-many",
+              "direction": "subject-to-object",
+              "evidence_requirement": "Verified source plus precise passage/document location; confidence is insufficient.",
+              "inverse_storage": "derived",
+              "meaning": "Documented ownership interest; no implied control.",
+              "object_types": [
+                "Company",
+                "Facility",
+                "Security"
+              ],
+              "predicate": "OWNS",
+              "subject_types": [
+                "Company",
+                "Person"
+              ],
+              "symmetric": false,
+              "temporal_requirement": "Record known effective dates only; unknown bounds remain null. Half-open intervals."
+            },
+            {
+              "cardinality": "many-to-many",
+              "direction": "subject-to-object",
+              "evidence_requirement": "Verified source plus precise passage/document location; confidence is insufficient.",
+              "inverse_storage": "derived",
+              "meaning": "Subject is a documented subsidiary of object.",
+              "object_types": [
+                "Company"
+              ],
+              "predicate": "SUBSIDIARY_OF",
+              "subject_types": [
+                "Company"
+              ],
+              "symmetric": false,
+              "temporal_requirement": "Record known effective dates only; unknown bounds remain null. Half-open intervals."
+            },
+            {
+              "cardinality": "many-to-many",
+              "direction": "subject-to-object",
+              "evidence_requirement": "Verified source plus precise passage/document location; confidence is insufficient.",
+              "inverse_storage": "derived",
+              "meaning": "Company operates facility.",
+              "object_types": [
+                "Facility"
+              ],
+              "predicate": "OPERATES",
+              "subject_types": [
+                "Company"
+              ],
+              "symmetric": false,
+              "temporal_requirement": "Record known effective dates only; unknown bounds remain null. Half-open intervals."
+            },
+            {
+              "cardinality": "many-to-many",
+              "direction": "subject-to-object",
+              "evidence_requirement": "Verified source plus precise passage/document location; confidence is insufficient.",
+              "inverse_storage": "derived",
+              "meaning": "Person employed by company.",
+              "object_types": [
+                "Company"
+              ],
+              "predicate": "EMPLOYED_BY",
+              "subject_types": [
+                "Person"
+              ],
+              "symmetric": false,
+              "temporal_requirement": "Record known effective dates only; unknown bounds remain null. Half-open intervals."
+            },
+            {
+              "cardinality": "many-to-many",
+              "direction": "subject-to-object",
+              "evidence_requirement": "Verified source plus precise passage/document location; confidence is insufficient.",
+              "inverse_storage": "derived",
+              "meaning": "Person holds documented executive role.",
+              "object_types": [
+                "Company"
+              ],
+              "predicate": "EXECUTIVE_OF",
+              "subject_types": [
+                "Person"
+              ],
+              "symmetric": false,
+              "temporal_requirement": "Record known effective dates only; unknown bounds remain null. Half-open intervals."
+            },
+            {
+              "cardinality": "many-to-many",
+              "direction": "subject-to-object",
+              "evidence_requirement": "Verified source plus precise passage/document location; confidence is insufficient.",
+              "inverse_storage": "derived",
+              "meaning": "Documented classification, not ownership.",
+              "object_types": [
+                "Sector"
+              ],
+              "predicate": "BELONGS_TO_SECTOR",
+              "subject_types": [
+                "Company",
+                "Industry"
+              ],
+              "symmetric": false,
+              "temporal_requirement": "Record known effective dates only; unknown bounds remain null. Half-open intervals."
+            },
+            {
+              "cardinality": "many-to-many",
+              "direction": "subject-to-object",
+              "evidence_requirement": "Verified source plus precise passage/document location; confidence is insufficient.",
+              "inverse_storage": "derived",
+              "meaning": "Documented business operations in geography/industry.",
+              "object_types": [
+                "Country",
+                "Industry",
+                "Region"
+              ],
+              "predicate": "OPERATES_IN",
+              "subject_types": [
+                "Company"
+              ],
+              "symmetric": false,
+              "temporal_requirement": "Record known effective dates only; unknown bounds remain null. Half-open intervals."
+            },
+            {
+              "cardinality": "many-to-many",
+              "direction": "subject-to-object",
+              "evidence_requirement": "Verified source plus precise passage/document location; confidence is insufficient.",
+              "inverse_storage": "derived",
+              "meaning": "Documented location.",
+              "object_types": [
+                "Country",
+                "Region"
+              ],
+              "predicate": "LOCATED_IN",
+              "subject_types": [
+                "Company",
+                "Exchange",
+                "Facility",
+                "Person",
+                "Region"
+              ],
+              "symmetric": false,
+              "temporal_requirement": "Record known effective dates only; unknown bounds remain null. Half-open intervals."
+            },
+            {
+              "cardinality": "many-to-many",
+              "direction": "subject-to-object",
+              "evidence_requirement": "Verified source plus precise passage/document location; confidence is insufficient.",
+              "inverse_storage": "derived",
+              "meaning": "Documented exposure; not verified financial impact.",
+              "object_types": [
+                "Country",
+                "Currency",
+                "Event",
+                "FinancialIndicator",
+                "Region"
+              ],
+              "predicate": "EXPOSED_TO",
+              "subject_types": [
+                "Company",
+                "Facility",
+                "Security"
+              ],
+              "symmetric": false,
+              "temporal_requirement": "Record known effective dates only; unknown bounds remain null. Half-open intervals."
+            },
+            {
+              "cardinality": "many-to-many",
+              "direction": "subject-to-object",
+              "evidence_requirement": "Verified source plus precise passage/document location; confidence is insufficient.",
+              "inverse_storage": "derived",
+              "meaning": "Entity mentioned in document; not endorsement.",
+              "object_types": [
+                "Filing",
+                "Source"
+              ],
+              "predicate": "REPORTED_IN",
+              "subject_types": [
+                "Company",
+                "Country",
+                "Currency",
+                "Event",
+                "Exchange",
+                "Facility",
+                "Filing",
+                "FinancialIndicator",
+                "Industry",
+                "Person",
+                "Region",
+                "Sector",
+                "Security"
+              ],
+              "symmetric": false,
+              "temporal_requirement": "Record known effective dates only; unknown bounds remain null. Half-open intervals."
+            },
+            {
+              "cardinality": "many-to-many",
+              "direction": "subject-to-object",
+              "evidence_requirement": "Verified source plus precise passage/document location; confidence is insufficient.",
+              "inverse_storage": "derived",
+              "meaning": "Documented observed effect; do not infer magnitude.",
+              "object_types": [
+                "Event"
+              ],
+              "predicate": "AFFECTED_BY",
+              "subject_types": [
+                "Company",
+                "Facility",
+                "Industry",
+                "Sector",
+                "Security"
+              ],
+              "symmetric": false,
+              "temporal_requirement": "Record known effective dates only; unknown bounds remain null. Half-open intervals."
+            },
+            {
+              "cardinality": "many-to-many",
+              "direction": "subject-to-object",
+              "evidence_requirement": "Verified source plus precise passage/document location; confidence is insufficient.",
+              "inverse_storage": "derived",
+              "meaning": "Explicit source-supported influence hypothesis; not independently established causality.",
+              "object_types": [
+                "FinancialIndicator",
+                "Industry",
+                "Sector"
+              ],
+              "predicate": "INFLUENCES",
+              "subject_types": [
+                "Event",
+                "FinancialIndicator"
+              ],
+              "symmetric": false,
+              "temporal_requirement": "Record known effective dates only; unknown bounds remain null. Half-open intervals."
+            }
+          ],
+          "items": {
+            "$ref": "#/$defs/PredicateDefinition"
+          },
+          "title": "Predicates",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "title": "GraphOntologyDefinition",
+      "type": "object"
+    },
+    "GraphRelationshipPredicate": {
+      "enum": [
+        "SUPPLIES",
+        "CUSTOMER_OF",
+        "COMPETES_WITH",
+        "OWNS",
+        "SUBSIDIARY_OF",
+        "OPERATES",
+        "EMPLOYED_BY",
+        "EXECUTIVE_OF",
+        "BELONGS_TO_SECTOR",
+        "OPERATES_IN",
+        "LOCATED_IN",
+        "EXPOSED_TO",
+        "REPORTED_IN",
+        "AFFECTED_BY",
+        "INFLUENCES"
+      ],
+      "title": "GraphRelationshipPredicate",
+      "type": "string"
+    },
+    "GraphScope": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9:_-]+$",
+          "title": "Identity",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "principal",
+            "workspace"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "identity"
+      ],
+      "title": "GraphScope",
+      "type": "object"
+    },
+    "GraphSource": {
+      "additionalProperties": false,
+      "properties": {
+        "content_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Digest"
+        },
+        "document_id": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Document Id"
+        },
+        "document_type": {
+          "maxLength": 500,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Document Type",
+          "type": "string"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "license": {
+          "maxLength": 500,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "License",
+          "type": "string"
+        },
+        "provider": {
+          "maxLength": 500,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Provider",
+          "type": "string"
+        },
+        "published_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Published At"
+        },
+        "redistribution": {
+          "default": "unknown",
+          "enum": [
+            "prohibited",
+            "restricted",
+            "permitted",
+            "unknown"
+          ],
+          "title": "Redistribution",
+          "type": "string"
+        },
+        "retrieved_at": {
+          "format": "date-time",
+          "title": "Retrieved At",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/GraphScope"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "format": "uri",
+              "maxLength": 2083,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "verification_status": {
+          "$ref": "#/$defs/VerificationStatus",
+          "default": "proposed"
+        }
+      },
+      "required": [
+        "scope",
+        "provider",
+        "document_type",
+        "license"
+      ],
+      "title": "GraphSource",
+      "type": "object"
+    },
+    "PredicateDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "cardinality": {
+          "const": "many-to-many",
+          "default": "many-to-many",
+          "title": "Cardinality",
+          "type": "string"
+        },
+        "direction": {
+          "const": "subject-to-object",
+          "default": "subject-to-object",
+          "title": "Direction",
+          "type": "string"
+        },
+        "evidence_requirement": {
+          "default": "Verified source plus precise passage/document location; confidence is insufficient.",
+          "title": "Evidence Requirement",
+          "type": "string"
+        },
+        "inverse_storage": {
+          "const": "derived",
+          "default": "derived",
+          "title": "Inverse Storage",
+          "type": "string"
+        },
+        "meaning": {
+          "title": "Meaning",
+          "type": "string"
+        },
+        "object_types": {
+          "items": {
+            "$ref": "#/$defs/EntityType"
+          },
+          "title": "Object Types",
+          "type": "array"
+        },
+        "predicate": {
+          "$ref": "#/$defs/GraphRelationshipPredicate"
+        },
+        "subject_types": {
+          "items": {
+            "$ref": "#/$defs/EntityType"
+          },
+          "title": "Subject Types",
+          "type": "array"
+        },
+        "symmetric": {
+          "default": false,
+          "title": "Symmetric",
+          "type": "boolean"
+        },
+        "temporal_requirement": {
+          "default": "Record known effective dates only; unknown bounds remain null. Half-open intervals.",
+          "title": "Temporal Requirement",
+          "type": "string"
+        }
+      },
+      "required": [
+        "predicate",
+        "subject_types",
+        "object_types",
+        "meaning"
+      ],
+      "title": "PredicateDefinition",
+      "type": "object"
+    },
+    "VerificationStatus": {
+      "enum": [
+        "proposed",
+        "verified",
+        "contradicted",
+        "retracted",
+        "superseded"
+      ],
+      "title": "VerificationStatus",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "assertion": {
+      "$ref": "#/$defs/GraphAssertion"
+    },
+    "entity": {
+      "$ref": "#/$defs/GraphEntity"
+    },
+    "ontology": {
+      "$ref": "#/$defs/GraphOntologyDefinition"
+    },
+    "source": {
+      "$ref": "#/$defs/GraphSource"
+    }
+  },
+  "required": [
+    "entity",
+    "assertion",
+    "source",
+    "ontology"
+  ],
+  "title": "GraphContracts",
+  "type": "object"
+}

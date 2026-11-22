@@ -113,11 +113,19 @@ async def lifespan(application: FastAPI):
     application.state.orchestrator = Orchestrator(
         model=model, max_iterations=iterations, tool_executor=tools,
     )
+    application.state.graph_repository = None
     logger.info("backend_initialized", model=model)
     try:
+        from dexter_py.graph.config import GraphConfig
+        from dexter_py.graph.repository import GraphRepository
+        graph_config = GraphConfig.from_env()
+        if graph_config.enabled:
+            application.state.graph_repository = await GraphRepository.connect(graph_config)
+            await application.state.graph_repository.verify_schema()
+            logger.info("graph_initialized", schema_version="1.0")
         yield
     finally:
-        for dependency in (application.state.session_store, tools, financial_provider, sec_provider,
+        for dependency in (application.state.graph_repository, application.state.session_store, tools, financial_provider, sec_provider,
                            application.state.execution_registry):
             if dependency is None:
                 continue
@@ -774,3 +782,9 @@ async def shared_state_unavailable(request: Request, exc: RedisError):
 
 from app.platform_api import router as platform_router
 app.include_router(platform_router)
+
+# Additive read-only graph foundation; all data routes reuse platform authorization.
+from app.graph_api import router as graph_router, graph_error_handler
+from dexter_py.graph.repository import GraphError
+app.include_router(graph_router)
+app.add_exception_handler(GraphError, graph_error_handler)

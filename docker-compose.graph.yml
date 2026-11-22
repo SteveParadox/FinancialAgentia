@@ -1,0 +1,55 @@
+# Opt-in graph extension. No database host ports are published.
+# Compose interpolation reads the shell or --env-file, not api.env_file.
+services:
+  neo4j:
+    image: neo4j:5.26.33-community
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: "${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD for the graph overlay}"
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 256m
+    volumes:
+      - financial-graph:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+  graph-migrate:
+    build:
+      context: .
+      dockerfile: python-backend/Dockerfile
+    command: ["python", "-m", "dexter_py.graph.migrations"]
+    env_file:
+      - path: ./python-backend/.env
+        required: true
+    environment:
+      GRAPH_ENABLED: "true"
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?Set NEO4J_PASSWORD}
+    depends_on:
+      neo4j:
+        condition: service_healthy
+  api:
+    environment:
+      GRAPH_ENABLED: "true"
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?Set NEO4J_PASSWORD}
+    depends_on:
+      graph-migrate:
+        condition: service_completed_successfully
+  worker:
+    environment:
+      GRAPH_ENABLED: "true"
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?Set NEO4J_PASSWORD}
+    depends_on:
+      graph-migrate:
+        condition: service_completed_successfully
+volumes:
+  financial-graph:

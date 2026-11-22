@@ -84,3 +84,19 @@ Existing provider tests include `python-backend/tests/test_live_provider.py` and
 - [ ] Deployment-specific production release gates verified.
 
 **Do not convert pending checks to passed without actual execution results.** See [documentation validation report](../documentation-validation.md).
+
+## Graph Phase 1–2 verification
+
+Actual execution results for the optional graph implementation, including disposable Neo4j/Redis coverage, restart recovery, Bun checks and blocked browser/Docker checks, are recorded in the [Phase 1–2 delivery report](../implementation/knowledge-graph-phase1-phase2.md). Reproduce the graph integration tests using a dedicated disposable Neo4j instance:
+
+```bash
+export TEST_NEO4J_URI=bolt://127.0.0.1:7687
+export TEST_NEO4J_PASSWORD='<disposable test secret>'
+export GRAPH_TEST_DISPOSABLE=yes
+# Optional: local unpacked distribution for a separate process/store restart test.
+export NEO4J_TEST_HOME=/absolute/path/to/neo4j-community-5.26.33
+PYTHONPATH=python-backend .venv/bin/python -m pytest -q python-backend/tests/test_graph_models.py python-backend/tests/test_graph_repository.py python-backend/tests/test_graph_api.py python-backend/tests/test_graph_restart.py
+PYTHONPATH=python-backend .venv/bin/python -m mypy --strict --follow-imports=silent python-backend/dexter_py/graph
+```
+
+The API isolation test also requires TEST_REDIS_URL. Integration tests clean up only their unique graph scopes, but schema tests install constraints/indexes: use a disposable database, never production. The restart case starts/stops only its own fresh temporary Neo4j store.
