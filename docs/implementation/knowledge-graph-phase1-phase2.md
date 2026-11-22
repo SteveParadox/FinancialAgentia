@@ -97,7 +97,7 @@ The separate review branch `fix/financial-graph-integrity-review-20261122` makes
 
 - Schema verification checks both required temporal indexes and exact applied migration version/checksum history, not merely constraint names. Schema drift now blocks graph-enabled application startup.
 - `GraphRepository.get_entity(..., known_at=...)` and `GET /api/v1/graph/entities/{uuid}?known_at=...` expose recorded entity metadata at knowledge time. Historical identifier ownership and valid-time entity revisions are still outside the current scope.
-- The assertion semantic fingerprint sorts evidence references before hashing, making duplicate detection order-independent without changing persisted evidence ordering.
+- Newly saved assertions canonicalize evidence-reference order for semantic fingerprints. Retries and exact-match collision checks remain compatible with legacy order-sensitive hashes. Existing legacy rows are not rewritten automatically; cross-order deduplication of two differently ordered legacy/new records requires an audited backfill before claiming full historical deduplication.
 - Entity and source model validation rejects timestamps more than five minutes in the future. This is a bounded clock-skew allowance, not a claim of independently verified source provenance.
 - New unit, disposable Neo4j integration, and API regression cases cover these corrections. A separate GitHub Actions job provisions disposable Neo4j and Redis for graph tests rather than skipping all database-backed cases.
 
